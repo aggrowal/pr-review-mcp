@@ -9,6 +9,9 @@ import {
 } from "./helpers/git-mock.js";
 import { runBranchResolver } from "../src/tools/t2-branch-resolver.js";
 import type { ProjectGuardOk } from "../src/tools/t1-project-guard.js";
+import { createNullLogger } from "../src/logger.js";
+
+const logger = createNullLogger();
 
 let repo: MockRepo;
 let guard: ProjectGuardOk;
@@ -30,7 +33,7 @@ afterEach(() => {
 
 describe("runBranchResolver", () => {
   it("fails when no branch name provided", () => {
-    const result = runBranchResolver(guard);
+    const result = runBranchResolver(guard, undefined, logger);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.reason).toContain("No branch name");
@@ -38,7 +41,7 @@ describe("runBranchResolver", () => {
   });
 
   it("fails when branch name is empty string", () => {
-    const result = runBranchResolver(guard, "  ");
+    const result = runBranchResolver(guard, "  ", logger);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.reason).toContain("No branch name");
@@ -46,7 +49,7 @@ describe("runBranchResolver", () => {
   });
 
   it("fails when branch does not exist locally", () => {
-    const result = runBranchResolver(guard, "feature/nonexistent");
+    const result = runBranchResolver(guard, "feature/nonexistent", logger);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.reason).toContain("not found");
@@ -58,7 +61,7 @@ describe("runBranchResolver", () => {
     addFiles(repo.path, { "login.ts": "export {};" });
     checkoutBranch(repo.path, "main");
 
-    const result = runBranchResolver(guard, "feature/logn");
+    const result = runBranchResolver(guard, "feature/logn", logger);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.hint).toContain("feature/login");
@@ -66,7 +69,7 @@ describe("runBranchResolver", () => {
   });
 
   it("fails when head branch equals base branch", () => {
-    const result = runBranchResolver(guard, "main");
+    const result = runBranchResolver(guard, "main", logger);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.reason).toContain("nothing to compare");
@@ -78,7 +81,7 @@ describe("runBranchResolver", () => {
     addFiles(repo.path, { "auth.ts": "export function login() {}" });
     checkoutBranch(repo.path, "main");
 
-    const result = runBranchResolver(guard, "feature/auth");
+    const result = runBranchResolver(guard, "feature/auth", logger);
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.context.headBranch).toBe("feature/auth");

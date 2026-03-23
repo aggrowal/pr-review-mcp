@@ -9,6 +9,9 @@ import {
 } from "./helpers/git-mock.js";
 import { runDiffExtractor } from "../src/tools/t3-diff-extractor.js";
 import type { BranchContext } from "../src/types.js";
+import { createNullLogger } from "../src/logger.js";
+
+const logger = createNullLogger();
 
 let repo: MockRepo;
 
@@ -39,7 +42,7 @@ describe("runDiffExtractor", () => {
     });
     checkoutBranch(repo.path, "main");
 
-    const result = runDiffExtractor(makeContext());
+    const result = runDiffExtractor(makeContext(), logger);
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.diff.files).toHaveLength(1);
@@ -61,7 +64,7 @@ describe("runDiffExtractor", () => {
     });
     checkoutBranch(repo.path, "main");
 
-    const result = runDiffExtractor(makeContext());
+    const result = runDiffExtractor(makeContext(), logger);
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.diff.files).toHaveLength(1);
@@ -83,7 +86,7 @@ describe("runDiffExtractor", () => {
     });
     checkoutBranch(repo.path, "main");
 
-    const result = runDiffExtractor(makeContext());
+    const result = runDiffExtractor(makeContext(), logger);
     expect(result.ok).toBe(true);
     if (result.ok) {
       const deleted = result.diff.files.find((f) => f.path === "old.txt");
@@ -101,7 +104,7 @@ describe("runDiffExtractor", () => {
     });
     checkoutBranch(repo.path, "main");
 
-    const result = runDiffExtractor(makeContext());
+    const result = runDiffExtractor(makeContext(), logger);
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.diff.totalAdditions).toBe(
@@ -115,7 +118,8 @@ describe("runDiffExtractor", () => {
 
   it("fails when branches have no common ancestor", () => {
     const result = runDiffExtractor(
-      makeContext({ headBranch: "orphan-branch" })
+      makeContext({ headBranch: "orphan-branch" }),
+      logger
     );
     expect(result.ok).toBe(false);
   });
@@ -124,7 +128,7 @@ describe("runDiffExtractor", () => {
     createBranch(repo.path, "feature/test");
     checkoutBranch(repo.path, "main");
 
-    const result = runDiffExtractor(makeContext());
+    const result = runDiffExtractor(makeContext(), logger);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.reason).toContain("No differences");
@@ -139,7 +143,7 @@ describe("runDiffExtractor", () => {
     // But the extractor should still work from main via git show fallback
     checkoutBranch(repo.path, "main");
 
-    const result = runDiffExtractor(makeContext());
+    const result = runDiffExtractor(makeContext(), logger);
     expect(result.ok).toBe(true);
     if (result.ok) {
       const file = result.diff.files.find((f) => f.path === "greet.ts");

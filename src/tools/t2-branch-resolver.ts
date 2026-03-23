@@ -1,6 +1,7 @@
 import { execSync } from "child_process";
 import type { BranchContext } from "../types.js";
 import type { ProjectGuardOk } from "./t1-project-guard.js";
+import type { Logger } from "../logger.js";
 
 export interface BranchResolverOk {
   ok: true;
@@ -11,6 +12,7 @@ export interface BranchResolverError {
   ok: false;
   reason: string;
   hint: string;
+  detail?: string;
 }
 
 export type BranchResolverResult = BranchResolverOk | BranchResolverError;
@@ -24,11 +26,13 @@ export type BranchResolverResult = BranchResolverOk | BranchResolverError;
  */
 export function runBranchResolver(
   guard: ProjectGuardOk,
-  explicitBranchName?: string
+  explicitBranchName: string | undefined,
+  logger: Logger
 ): BranchResolverResult {
   const { repoRoot, mainBranch, projectName, repoUrl } = guard;
 
   if (!explicitBranchName || explicitBranchName.trim() === "") {
+    logger.error("T2: no branch name provided");
     return {
       ok: false,
       reason: "No branch name provided.",
@@ -39,15 +43,19 @@ export function runBranchResolver(
   }
 
   const headBranch = explicitBranchName.trim();
+  const verifyCmd = `git rev-parse --verify "${headBranch}"`;
+  logger.debug(`T2: verifying branch "${headBranch}"`, { cmd: verifyCmd, cwd: repoRoot });
 
-  // Verify the branch exists locally
   try {
-    execSync(`git rev-parse --verify "${headBranch}"`, {
+    execSync(verifyCmd, {
       cwd: repoRoot,
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
     });
-  } catch {
+  } catch (e) {
+    const stderr = e instanceof Error ? (e as any).stderr?.toString?.() ?? String(e) : String(e);
+    logger.error(`T2: branch "${headBranch}" not found`, { stderr });
+
     let similar = "";
     try {
       const allBranches = execSync("git branch --list", {
@@ -58,6 +66,8 @@ export function runBranchResolver(
         .map((b) => b.replace(/^\*?\s+/, ""))
         .filter(Boolean);
 
+      logger.debug("T2: fuzzy matching against local branches", { count: allBranches.length });
+
       const close = allBranches.filter(
         (b) =>
           b.includes(headBranch) ||
@@ -66,9 +76,10 @@ export function runBranchResolver(
       );
       if (close.length > 0) {
         similar = ` Did you mean: ${close.slice(0, 3).join(", ")}?`;
+        logger.warn(`T2: similar branches found: ${close.slice(0, 3).join(", ")}`);
       }
     } catch {
-      /* ignore */
+      logger.debug("T2: failed to list branches for fuzzy matching");
     }
 
     return {
@@ -77,16 +88,20 @@ export function runBranchResolver(
       hint:
         `Fetch the branch first with: git fetch origin ${headBranch}` +
         (similar ? "\n" + similar : ""),
+      detail: `Command "${verifyCmd}" failed: ${stderr}`,
     };
   }
 
   if (headBranch === mainBranch) {
+    logger.error(`T2: head branch equals base branch "${mainBranch}"`);
     return {
       ok: false,
       reason: `Head branch and base branch are both "${mainBranch}" -- nothing to compare.`,
       hint: "Pass a different branch name -- the one containing the changes you want reviewed.",
     };
   }
+
+  logger.debug("T2: branch verified", { headBranch, baseBranch: mainBranch });
 
   return {
     ok: true,

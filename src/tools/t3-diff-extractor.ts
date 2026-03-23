@@ -2,6 +2,7 @@ import { execSync } from "child_process";
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 import type { BranchContext, ChangedFile, DiffContext } from "../types.js";
+import type { Logger } from "../logger.js";
 
 export interface DiffExtractorOk {
   ok: true;
@@ -12,6 +13,7 @@ export interface DiffExtractorError {
   ok: false;
   reason: string;
   hint: string;
+  detail?: string;
 }
 
 export type DiffExtractorResult = DiffExtractorOk | DiffExtractorError;
@@ -25,41 +27,55 @@ export type DiffExtractorResult = DiffExtractorOk | DiffExtractorError;
  * commits that landed on base after the branch was cut.
  */
 export function runDiffExtractor(
-  context: BranchContext
+  context: BranchContext,
+  logger: Logger
 ): DiffExtractorResult {
   const { repoRoot, baseBranch, headBranch } = context;
 
   // Step 1: find merge-base
   let mergeBase: string;
+  const mergeBaseCmd = `git merge-base "${baseBranch}" "${headBranch}"`;
+  logger.debug("T3: computing merge-base", { cmd: mergeBaseCmd });
   try {
-    mergeBase = execSync(
-      `git merge-base "${baseBranch}" "${headBranch}"`,
-      { cwd: repoRoot, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }
-    ).trim();
-  } catch {
+    mergeBase = execSync(mergeBaseCmd, {
+      cwd: repoRoot,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
+  } catch (e) {
+    const stderr = e instanceof Error ? (e as any).stderr?.toString?.() ?? String(e) : String(e);
+    logger.error("T3: merge-base failed", { baseBranch, headBranch, stderr });
     return {
       ok: false,
       reason: `Could not find a common ancestor between "${baseBranch}" and "${headBranch}".`,
       hint: `Make sure both branches share history. Try: git fetch origin ${baseBranch}`,
+      detail: `Command "${mergeBaseCmd}" failed: ${stderr}`,
     };
   }
+  logger.debug("T3: merge-base resolved", { mergeBase: mergeBase.slice(0, 12) });
 
   // Step 2: get name-status
   let nameStatus: string;
+  const nameStatusCmd = `git diff --name-status "${mergeBase}" "${headBranch}"`;
+  logger.debug("T3: listing changed files", { cmd: nameStatusCmd });
   try {
-    nameStatus = execSync(
-      `git diff --name-status "${mergeBase}" "${headBranch}"`,
-      { cwd: repoRoot, encoding: "utf-8" }
-    );
+    nameStatus = execSync(nameStatusCmd, {
+      cwd: repoRoot,
+      encoding: "utf-8",
+    });
   } catch (e) {
+    const stderr = String(e);
+    logger.error("T3: name-status failed", { stderr });
     return {
       ok: false,
       reason: "Failed to list changed files.",
-      hint: String(e),
+      hint: stderr,
+      detail: `Command "${nameStatusCmd}" failed: ${stderr}`,
     };
   }
 
   if (!nameStatus.trim()) {
+    logger.error("T3: no differences found", { baseBranch, headBranch });
     return {
       ok: false,
       reason: `No differences found between "${baseBranch}" and "${headBranch}".`,
@@ -69,23 +85,37 @@ export function runDiffExtractor(
 
   // Step 3: get full diff with context lines
   let fullDiff: string;
+  const diffCmd = `git diff -U6 "${mergeBase}" "${headBranch}"`;
+  logger.debug("T3: generating full diff", { cmd: diffCmd });
   try {
-    fullDiff = execSync(
-      `git diff -U6 "${mergeBase}" "${headBranch}"`,
-      { cwd: repoRoot, encoding: "utf-8", maxBuffer: 50 * 1024 * 1024 }
-    );
+    fullDiff = execSync(diffCmd, {
+      cwd: repoRoot,
+      encoding: "utf-8",
+      maxBuffer: 50 * 1024 * 1024,
+    });
   } catch (e) {
-    return { ok: false, reason: "Failed to generate diff.", hint: String(e) };
+    const stderr = String(e);
+    logger.error("T3: full diff failed", { stderr });
+    return {
+      ok: false,
+      reason: "Failed to generate diff.",
+      hint: stderr,
+      detail: `Command "${diffCmd}" failed: ${stderr}`,
+    };
   }
+  logger.debug("T3: full diff generated", { bytes: fullDiff.length });
 
   // Step 4: get numstat for addition/deletion counts
   let numStatRaw: string;
+  const numStatCmd = `git diff --numstat "${mergeBase}" "${headBranch}"`;
+  logger.debug("T3: computing numstat", { cmd: numStatCmd });
   try {
-    numStatRaw = execSync(
-      `git diff --numstat "${mergeBase}" "${headBranch}"`,
-      { cwd: repoRoot, encoding: "utf-8" }
-    );
+    numStatRaw = execSync(numStatCmd, {
+      cwd: repoRoot,
+      encoding: "utf-8",
+    });
   } catch {
+    logger.warn("T3: numstat failed, proceeding without line counts");
     numStatRaw = "";
   }
 
@@ -94,6 +124,7 @@ export function runDiffExtractor(
   // Step 5: parse file list and build ChangedFile[]
   const files: ChangedFile[] = [];
   const lines = nameStatus.trim().split("\n").filter(Boolean);
+  logger.debug(`T3: parsing ${lines.length} changed file(s)`);
 
   for (const line of lines) {
     const parts = line.split("\t");
@@ -115,8 +146,9 @@ export function runDiffExtractor(
       if (existsSync(absPath)) {
         try {
           content = readFileSync(absPath, "utf-8");
+          logger.debug(`T3: read file content from disk`, { path: actualPath });
         } catch {
-          // Binary or unreadable
+          logger.debug(`T3: could not read file from disk (binary/unreadable)`, { path: actualPath });
         }
       } else {
         try {
@@ -124,8 +156,9 @@ export function runDiffExtractor(
             `git show "${headBranch}:${actualPath}"`,
             { cwd: repoRoot, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 }
           );
+          logger.warn(`T3: file read via git-show (not on disk)`, { path: actualPath });
         } catch {
-          /* ignore */
+          logger.debug(`T3: could not read file content via git-show`, { path: actualPath });
         }
       }
     }
@@ -143,6 +176,12 @@ export function runDiffExtractor(
 
   const totalAdditions = files.reduce((s, f) => s + f.additions, 0);
   const totalDeletions = files.reduce((s, f) => s + f.deletions, 0);
+
+  logger.debug("T3: diff extraction complete", {
+    fileCount: files.length,
+    totalAdditions,
+    totalDeletions,
+  });
 
   return {
     ok: true,

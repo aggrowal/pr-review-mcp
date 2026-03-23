@@ -14,6 +14,7 @@ import { runProjectGuard } from "../src/tools/t1-project-guard.js";
 import { runBranchResolver } from "../src/tools/t2-branch-resolver.js";
 import { runDiffExtractor } from "../src/tools/t3-diff-extractor.js";
 import { detectProjectContext, filterSkills } from "../src/orchestrator/detect.js";
+import { createNullLogger } from "../src/logger.js";
 
 import * as correctness from "../src/skills/correctness/index.js";
 import * as securityGeneric from "../src/skills/security-generic/index.js";
@@ -22,6 +23,7 @@ import * as redundancy from "../src/skills/redundancy/index.js";
 import type { SkillModule } from "../src/types.js";
 
 const SKILL_REGISTRY: SkillModule[] = [correctness, securityGeneric, redundancy];
+const logger = createNullLogger();
 
 let repo: MockRepo;
 let configDir: string;
@@ -79,17 +81,17 @@ describe("Full pipeline integration", () => {
     checkoutBranch(repo.path, "main");
 
     // T1: Project guard
-    const guard = runProjectGuard(repo.path, configPath);
+    const guard = runProjectGuard(repo.path, logger, configPath);
     expect(guard.ok).toBe(true);
     if (!guard.ok) return;
 
     // T2: Branch resolver
-    const branchResult = runBranchResolver(guard, "feature/auth");
+    const branchResult = runBranchResolver(guard, "feature/auth", logger);
     expect(branchResult.ok).toBe(true);
     if (!branchResult.ok) return;
 
     // T3: Diff extractor
-    const diffResult = runDiffExtractor(branchResult.context);
+    const diffResult = runDiffExtractor(branchResult.context, logger);
     expect(diffResult.ok).toBe(true);
     if (!diffResult.ok) return;
 
@@ -98,7 +100,7 @@ describe("Full pipeline integration", () => {
     expect(diff.totalAdditions).toBeGreaterThan(0);
 
     // Orchestrator: detect
-    const ctx = detectProjectContext(diff);
+    const ctx = detectProjectContext(diff, logger);
     expect(ctx.language).toBe("typescript");
     expect(ctx.patterns).toContain("auth");
     expect(ctx.fileCount).toBe(2);
@@ -106,7 +108,8 @@ describe("Full pipeline integration", () => {
     // Orchestrator: filter skills
     const { matched, skipped } = filterSkills(
       ctx,
-      SKILL_REGISTRY.map((s) => s.metadata)
+      SKILL_REGISTRY.map((s) => s.metadata),
+      logger
     );
 
     // All three default skills are wildcard, should all match
@@ -146,16 +149,16 @@ describe("Full pipeline integration", () => {
     });
     checkoutBranch(repo.path, "main");
 
-    const guard = runProjectGuard(repo.path, configPath);
+    const guard = runProjectGuard(repo.path, logger, configPath);
     if (!guard.ok) return;
 
-    const branchResult = runBranchResolver(guard, "feature/mixed");
+    const branchResult = runBranchResolver(guard, "feature/mixed", logger);
     if (!branchResult.ok) return;
 
-    const diffResult = runDiffExtractor(branchResult.context);
+    const diffResult = runDiffExtractor(branchResult.context, logger);
     if (!diffResult.ok) return;
 
-    const ctx = detectProjectContext(diffResult.diff);
+    const ctx = detectProjectContext(diffResult.diff, logger);
     // TypeScript has 2 files (.tsx + .ts), Python has 1 -- TS wins
     expect(ctx.language).toBe("typescript");
     expect(ctx.framework).toContain("react");
@@ -168,7 +171,7 @@ describe("Full pipeline integration", () => {
     writeConfig({ version: 1, projects: {} }, emptyConfigPath);
 
     try {
-      const guard = runProjectGuard(repo.path, emptyConfigPath);
+      const guard = runProjectGuard(repo.path, logger, emptyConfigPath);
       expect(guard.ok).toBe(false);
       if (!guard.ok) {
         expect(guard.reason).toContain("not configured");
@@ -179,10 +182,10 @@ describe("Full pipeline integration", () => {
   });
 
   it("returns error for missing branch", () => {
-    const guard = runProjectGuard(repo.path, configPath);
+    const guard = runProjectGuard(repo.path, logger, configPath);
     if (!guard.ok) return;
 
-    const branchResult = runBranchResolver(guard, "feature/does-not-exist");
+    const branchResult = runBranchResolver(guard, "feature/does-not-exist", logger);
     expect(branchResult.ok).toBe(false);
   });
 });

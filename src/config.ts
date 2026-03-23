@@ -13,6 +13,8 @@ export const ProjectConfigSchema = z.object({
 export const ConfigSchema = z.object({
   version: z.literal(1).default(1),
   projects: z.record(z.string(), ProjectConfigSchema).default({}),
+  logLevel: z.enum(["debug", "info", "warn", "error"]).optional(),
+  logFile: z.union([z.boolean(), z.string()]).optional(),
 });
 
 export type ProjectConfig = z.infer<typeof ProjectConfigSchema>;

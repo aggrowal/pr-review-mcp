@@ -8,6 +8,9 @@ import type {
   ChangedFile,
   SkillMetadata,
 } from "../src/types.js";
+import { createNullLogger } from "../src/logger.js";
+
+const logger = createNullLogger();
 
 function makeDiff(
   files: Partial<ChangedFile>[],
@@ -44,7 +47,7 @@ describe("detectProjectContext", () => {
         { path: "src/utils.ts" },
         { path: "src/types.ts" },
       ]);
-      const ctx = detectProjectContext(diff);
+      const ctx = detectProjectContext(diff, logger);
       expect(ctx.language).toBe("typescript");
     });
 
@@ -53,7 +56,7 @@ describe("detectProjectContext", () => {
         { path: "app/main.py" },
         { path: "app/models.py" },
       ]);
-      const ctx = detectProjectContext(diff);
+      const ctx = detectProjectContext(diff, logger);
       expect(ctx.language).toBe("python");
     });
 
@@ -62,7 +65,7 @@ describe("detectProjectContext", () => {
         { path: "src/Main.java" },
         { path: "src/Service.java" },
       ]);
-      const ctx = detectProjectContext(diff);
+      const ctx = detectProjectContext(diff, logger);
       expect(ctx.language).toBe("java");
     });
 
@@ -71,7 +74,7 @@ describe("detectProjectContext", () => {
         { path: "cmd/server/main.go" },
         { path: "internal/handler.go" },
       ]);
-      const ctx = detectProjectContext(diff);
+      const ctx = detectProjectContext(diff, logger);
       expect(ctx.language).toBe("go");
     });
 
@@ -82,7 +85,7 @@ describe("detectProjectContext", () => {
         { path: "src/c.ts" },
         { path: "config.py" },
       ]);
-      const ctx = detectProjectContext(diff);
+      const ctx = detectProjectContext(diff, logger);
       expect(ctx.language).toBe("typescript");
     });
 
@@ -91,7 +94,7 @@ describe("detectProjectContext", () => {
         { path: "docs/readme.md" },
         { path: "data/config.yaml" },
       ]);
-      const ctx = detectProjectContext(diff);
+      const ctx = detectProjectContext(diff, logger);
       expect(ctx.language).toBe("unknown");
     });
   });
@@ -104,13 +107,13 @@ describe("detectProjectContext", () => {
           content: 'import React from "react";\nimport { useState } from "react";',
         },
       ]);
-      const ctx = detectProjectContext(diff);
+      const ctx = detectProjectContext(diff, logger);
       expect(ctx.framework).toContain("react");
     });
 
     it("detects nextjs from next.config file", () => {
       const diff = makeDiff([{ path: "next.config.js" }]);
-      const ctx = detectProjectContext(diff);
+      const ctx = detectProjectContext(diff, logger);
       expect(ctx.framework).toContain("nextjs");
     });
 
@@ -121,13 +124,13 @@ describe("detectProjectContext", () => {
           content: "@SpringBootApplication\npublic class App {}",
         },
       ]);
-      const ctx = detectProjectContext(diff);
+      const ctx = detectProjectContext(diff, logger);
       expect(ctx.framework).toContain("spring-boot");
     });
 
     it("detects django from manage.py", () => {
       const diff = makeDiff([{ path: "manage.py" }]);
-      const ctx = detectProjectContext(diff);
+      const ctx = detectProjectContext(diff, logger);
       expect(ctx.framework).toContain("django");
     });
 
@@ -138,13 +141,13 @@ describe("detectProjectContext", () => {
           content: 'const express = require("express");\nconst app = express();',
         },
       ]);
-      const ctx = detectProjectContext(diff);
+      const ctx = detectProjectContext(diff, logger);
       expect(ctx.framework).toContain("express");
     });
 
     it("returns empty array when no framework detected", () => {
       const diff = makeDiff([{ path: "src/utils.ts", content: "export const x = 1;" }]);
-      const ctx = detectProjectContext(diff);
+      const ctx = detectProjectContext(diff, logger);
       expect(ctx.framework).toEqual([]);
     });
   });
@@ -157,7 +160,7 @@ describe("detectProjectContext", () => {
           content: 'router.get("/users", handler);',
         },
       ]);
-      const ctx = detectProjectContext(diff);
+      const ctx = detectProjectContext(diff, logger);
       expect(ctx.patterns).toContain("rest-api");
     });
 
@@ -168,13 +171,13 @@ describe("detectProjectContext", () => {
           content: 'const result = db.query("SELECT * FROM users WHERE id = $1");',
         },
       ]);
-      const ctx = detectProjectContext(diff);
+      const ctx = detectProjectContext(diff, logger);
       expect(ctx.patterns).toContain("database");
     });
 
     it("detects auth from file paths", () => {
       const diff = makeDiff([{ path: "src/auth/login.ts" }]);
-      const ctx = detectProjectContext(diff);
+      const ctx = detectProjectContext(diff, logger);
       expect(ctx.patterns).toContain("auth");
     });
 
@@ -185,7 +188,7 @@ describe("detectProjectContext", () => {
           content: 'describe("utils", () => { it("works", () => { expect(1).toBe(1); }); });',
         },
       ]);
-      const ctx = detectProjectContext(diff);
+      const ctx = detectProjectContext(diff, logger);
       expect(ctx.patterns).toContain("testing");
     });
   });
@@ -197,7 +200,7 @@ describe("detectProjectContext", () => {
         { path: "src/auth/register.ts" },
         { path: "src/payments/checkout.ts" },
       ]);
-      const ctx = detectProjectContext(diff);
+      const ctx = detectProjectContext(diff, logger);
       expect(ctx.primaryChangedAreas).toContain("auth");
       expect(ctx.primaryChangedAreas).toContain("payments");
     });
@@ -206,7 +209,7 @@ describe("detectProjectContext", () => {
       const diff = makeDiff([
         { path: "src/handlers/api.ts" },
       ]);
-      const ctx = detectProjectContext(diff);
+      const ctx = detectProjectContext(diff, logger);
       expect(ctx.primaryChangedAreas).not.toContain("src");
       expect(ctx.primaryChangedAreas).toContain("handlers");
     });
@@ -218,7 +221,7 @@ describe("detectProjectContext", () => {
       { path: "b.ts" },
       { path: "c.ts" },
     ]);
-    const ctx = detectProjectContext(diff);
+    const ctx = detectProjectContext(diff, logger);
     expect(ctx.fileCount).toBe(3);
   });
 });
@@ -249,31 +252,32 @@ describe("filterSkills", () => {
   };
 
   it("matches wildcard skills against any context", () => {
-    const ctx = detectProjectContext(makeDiff([{ path: "a.rs" }]));
-    const result = filterSkills(ctx, [wildcardSkill]);
+    const ctx = detectProjectContext(makeDiff([{ path: "a.rs" }]), logger);
+    const result = filterSkills(ctx, [wildcardSkill], logger);
     expect(result.matched).toHaveLength(1);
     expect(result.skipped).toHaveLength(0);
   });
 
   it("skips language-specific skills that do not match", () => {
-    const ctx = detectProjectContext(makeDiff([{ path: "a.ts" }]));
-    const result = filterSkills(ctx, [javaOnlySkill]);
+    const ctx = detectProjectContext(makeDiff([{ path: "a.ts" }]), logger);
+    const result = filterSkills(ctx, [javaOnlySkill], logger);
     expect(result.matched).toHaveLength(0);
     expect(result.skipped).toHaveLength(1);
     expect(result.skipped[0].reason).toContain("language");
   });
 
   it("matches language-specific skills when language matches", () => {
-    const ctx = detectProjectContext(makeDiff([{ path: "App.java" }]));
-    const result = filterSkills(ctx, [javaOnlySkill]);
+    const ctx = detectProjectContext(makeDiff([{ path: "App.java" }]), logger);
+    const result = filterSkills(ctx, [javaOnlySkill], logger);
     expect(result.matched).toHaveLength(1);
   });
 
   it("requires all specified fields to match (AND logic)", () => {
     const ctx = detectProjectContext(
-      makeDiff([{ path: "App.java", content: "public class App {}" }])
+      makeDiff([{ path: "App.java", content: "public class App {}" }]),
+      logger
     );
-    const result = filterSkills(ctx, [springSkill]);
+    const result = filterSkills(ctx, [springSkill], logger);
     expect(result.matched).toHaveLength(0);
     expect(result.skipped[0].reason).toContain("framework");
   });
@@ -285,9 +289,10 @@ describe("filterSkills", () => {
           path: "App.java",
           content: "@SpringBootApplication\npublic class App {}",
         },
-      ])
+      ]),
+      logger
     );
-    const result = filterSkills(ctx, [springSkill]);
+    const result = filterSkills(ctx, [springSkill], logger);
     expect(result.matched).toHaveLength(1);
   });
 
@@ -298,9 +303,10 @@ describe("filterSkills", () => {
           path: "App.kt",
           content: "@SpringBootApplication\nclass App",
         },
-      ])
+      ]),
+      logger
     );
-    const result = filterSkills(ctx, [springSkill]);
+    const result = filterSkills(ctx, [springSkill], logger);
     expect(result.matched).toHaveLength(1);
   });
 });

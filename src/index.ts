@@ -12,6 +12,11 @@ import { runProjectGuard } from "./tools/t1-project-guard.js";
 import { runBranchResolver } from "./tools/t2-branch-resolver.js";
 import { runDiffExtractor } from "./tools/t3-diff-extractor.js";
 import { detectProjectContext, filterSkills } from "./orchestrator/detect.js";
+import {
+  Logger,
+  parseCliArgs,
+  resolveLogConfig,
+} from "./logger.js";
 
 import type { DiffContext, DetectedContext, SkillMetadata, SkillModule } from "./types.js";
 
@@ -23,12 +28,25 @@ import * as redundancy from "./skills/redundancy/index.js";
 
 const SKILL_REGISTRY: SkillModule[] = [correctness, securityGeneric, redundancy];
 
+// ---- Logger initialization ----
+
+const cliArgs = parseCliArgs(process.argv);
+const config = readConfig();
+const logConfig = resolveLogConfig({
+  cliLogLevel: cliArgs.logLevel,
+  cliLogFile: cliArgs.logFile,
+  envLogLevel: process.env.PR_REVIEW_LOG,
+  configLogLevel: config.logLevel,
+  configLogFile: config.logFile,
+});
+const logger = new Logger(logConfig);
+
 // ---- Server ----
 
-const server = new McpServer({
-  name: "pr-review-mcp",
-  version: "0.1.0",
-});
+const server = new McpServer(
+  { name: "pr-review-mcp", version: "0.1.0" },
+  { capabilities: { logging: {} } },
+);
 
 // ---- Tool: configure_project ----
 
@@ -56,7 +74,9 @@ server.tool(
       ),
   },
   async ({ name, repoUrl, mainBranch }) => {
+    logger.info(`configure_project: saving project "${name}"`, { repoUrl, mainBranch });
     upsertProjectConfig(name, { repoUrl, mainBranch });
+    logger.info(`configure_project: project "${name}" saved`, { configFile: configFilePath() });
 
     return {
       content: [
@@ -83,8 +103,10 @@ server.tool(
   "List all configured projects.",
   {},
   async () => {
-    const config = readConfig();
-    const entries = Object.entries(config.projects);
+    logger.info("list_projects: reading config");
+    const cfg = readConfig();
+    const entries = Object.entries(cfg.projects);
+    logger.info(`list_projects: ${entries.length} project(s) found`);
 
     if (entries.length === 0) {
       return {
@@ -133,70 +155,94 @@ server.prompt(
   },
   async ({ branch, cwd: cwdArg }) => {
     const cwd = cwdArg ?? process.cwd();
+    logger.info(`pr_review: starting`, { branch, cwd });
 
     // T1: Project guard
-    const guard = runProjectGuard(cwd);
+    const endT1 = logger.startStep("T1: Project guard");
+    const guard = runProjectGuard(cwd, logger);
     if (!guard.ok) {
+      logger.error(`T1: Project guard failed -- ${guard.reason}`, { hint: guard.hint, detail: guard.detail });
+      endT1({ status: "failed" });
+      const detail = guard.detail ? `\n\nDetail: ${guard.detail}` : "";
       return {
         messages: [
           {
             role: "user" as const,
             content: {
               type: "text" as const,
-              text: `PR Review blocked\n\nReason: ${guard.reason}\n\nWhat to do: ${guard.hint}`,
+              text: `PR Review blocked\n\nReason: ${guard.reason}\n\nWhat to do: ${guard.hint}${detail}`,
             },
           },
         ],
       };
     }
+    endT1({ project: guard.projectName, mainBranch: guard.mainBranch });
 
     // T2: Branch resolver
-    const branchResult = runBranchResolver(guard, branch);
+    const endT2 = logger.startStep("T2: Branch resolver");
+    const branchResult = runBranchResolver(guard, branch, logger);
     if (!branchResult.ok) {
+      logger.error(`T2: Branch resolver failed -- ${branchResult.reason}`, { hint: branchResult.hint, detail: branchResult.detail });
+      endT2({ status: "failed" });
+      const detail = branchResult.detail ? `\n\nDetail: ${branchResult.detail}` : "";
       return {
         messages: [
           {
             role: "user" as const,
             content: {
               type: "text" as const,
-              text: `Branch resolution failed\n\nReason: ${branchResult.reason}\n\nWhat to do: ${branchResult.hint}`,
+              text: `Branch resolution failed\n\nReason: ${branchResult.reason}\n\nWhat to do: ${branchResult.hint}${detail}`,
             },
           },
         ],
       };
     }
+    endT2({ head: branchResult.context.headBranch, base: branchResult.context.baseBranch });
 
     // T3: Diff extractor
-    const diffResult = runDiffExtractor(branchResult.context);
+    const endT3 = logger.startStep("T3: Diff extractor");
+    const diffResult = runDiffExtractor(branchResult.context, logger);
     if (!diffResult.ok) {
+      logger.error(`T3: Diff extractor failed -- ${diffResult.reason}`, { hint: diffResult.hint, detail: diffResult.detail });
+      endT3({ status: "failed" });
+      const detail = diffResult.detail ? `\n\nDetail: ${diffResult.detail}` : "";
       return {
         messages: [
           {
             role: "user" as const,
             content: {
               type: "text" as const,
-              text: `Diff extraction failed\n\nReason: ${diffResult.reason}\n\nWhat to do: ${diffResult.hint}`,
+              text: `Diff extraction failed\n\nReason: ${diffResult.reason}\n\nWhat to do: ${diffResult.hint}${detail}`,
             },
           },
         ],
       };
     }
+    endT3({ files: diffResult.diff.files.length, additions: diffResult.diff.totalAdditions, deletions: diffResult.diff.totalDeletions });
 
     const diff = diffResult.diff;
 
     // Orchestrator: detect context, filter skills
-    const detectedCtx = detectProjectContext(diff);
+    const endDetect = logger.startStep("Orchestrator: detect + filter");
+    const detectedCtx = detectProjectContext(diff, logger);
     const { matched, skipped } = filterSkills(
       detectedCtx,
-      SKILL_REGISTRY.map((s) => s.metadata)
+      SKILL_REGISTRY.map((s) => s.metadata),
+      logger
     );
+    endDetect({ language: detectedCtx.language, frameworks: detectedCtx.framework, patterns: detectedCtx.patterns, matched: matched.length, skipped: skipped.length });
 
+    // Assembly
+    const endAssembly = logger.startStep("Assembly");
     const assembledPrompt = buildAssembledPrompt(
       diff,
       detectedCtx,
       matched,
       skipped
     );
+    endAssembly({ skills: matched.length, promptChars: assembledPrompt.length });
+
+    logger.info("pr_review: complete");
 
     return {
       messages: [
@@ -305,10 +351,15 @@ One paragraph overall assessment.`;
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("pr-review-mcp running on stdio");
+  logger.setMcpServer(server);
+  logger.info("pr-review-mcp v0.1.0 started", {
+    level: logConfig.level,
+    filePath: logConfig.filePath ?? "none",
+    sinks: ["stderr", "mcp", ...(logConfig.filePath ? ["file"] : [])],
+  });
 }
 
 main().catch((err) => {
-  console.error("Fatal:", err);
+  logger.error("Fatal error during startup", { error: String(err) });
   process.exit(1);
 });

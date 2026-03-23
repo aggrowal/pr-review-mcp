@@ -1,4 +1,5 @@
 import type { DiffContext, DetectedContext, SkillMetadata } from "../types.js";
+import type { Logger } from "../logger.js";
 
 // ---- Extension -> language map ----
 
@@ -231,11 +232,19 @@ const PATTERN_RULES: PatternRule[] = [
 
 // ---- Main detection function ----
 
-export function detectProjectContext(diff: DiffContext): DetectedContext {
-  const language = detectLanguage(diff);
-  const framework = detectFrameworks(diff);
-  const patterns = detectPatterns(diff);
+export function detectProjectContext(diff: DiffContext, logger: Logger): DetectedContext {
+  const language = detectLanguage(diff, logger);
+  const framework = detectFrameworks(diff, logger);
+  const patterns = detectPatterns(diff, logger);
   const primaryChangedAreas = extractChangedAreas(diff);
+
+  logger.info(
+    `Detected: language=${language}, frameworks=[${framework.join(", ")}], patterns=[${patterns.join(", ")}]`,
+  );
+  logger.debug("Detection details", {
+    areas: primaryChangedAreas,
+    fileCount: diff.files.length,
+  });
 
   return {
     language,
@@ -255,7 +264,8 @@ export interface SkillFilterResult {
 
 export function filterSkills(
   ctx: DetectedContext,
-  skills: SkillMetadata[]
+  skills: SkillMetadata[],
+  logger: Logger
 ): SkillFilterResult {
   const matched: SkillMetadata[] = [];
   const skipped: { skill: SkillMetadata; reason: string }[] = [];
@@ -277,10 +287,14 @@ export function filterSkills(
 
     if (reasons.length === 0) {
       matched.push(skill);
+      logger.debug(`Skill "${skill.id}" matched`);
     } else {
       skipped.push({ skill, reason: reasons.join("; ") });
+      logger.debug(`Skill "${skill.id}" skipped: ${reasons.join("; ")}`);
     }
   }
+
+  logger.info(`Skills: ${matched.length} matched, ${skipped.length} skipped`);
 
   return { matched, skipped };
 }
@@ -297,7 +311,7 @@ function matchesField(required: string[], detected: string[]): boolean {
 
 // ---- Internal helpers ----
 
-function detectLanguage(diff: DiffContext): string {
+function detectLanguage(diff: DiffContext, logger: Logger): string {
   const counts = new Map<string, number>();
 
   for (const file of diff.files) {
@@ -308,7 +322,14 @@ function detectLanguage(diff: DiffContext): string {
     }
   }
 
-  if (counts.size === 0) return "unknown";
+  if (counts.size === 0) {
+    logger.debug("Language detection: no recognized extensions");
+    return "unknown";
+  }
+
+  logger.debug("Language detection votes", {
+    votes: Object.fromEntries(counts),
+  });
 
   let maxLang = "unknown";
   let maxCount = 0;
@@ -321,7 +342,7 @@ function detectLanguage(diff: DiffContext): string {
   return maxLang;
 }
 
-function detectFrameworks(diff: DiffContext): string[] {
+function detectFrameworks(diff: DiffContext, logger: Logger): string[] {
   const allPaths = diff.files.map((f) => f.path);
   const allContent = diff.files
     .map((f) => f.content ?? f.diff)
@@ -339,13 +360,15 @@ function detectFrameworks(diff: DiffContext): string[] {
 
     if (pathMatch || contentMatch) {
       detected.push(rule.id);
+      const matchedVia = pathMatch && contentMatch ? "path+content" : pathMatch ? "path" : "content";
+      logger.debug(`Framework "${rule.id}" matched via ${matchedVia}`);
     }
   }
 
   return detected;
 }
 
-function detectPatterns(diff: DiffContext): string[] {
+function detectPatterns(diff: DiffContext, logger: Logger): string[] {
   const allPaths = diff.files.map((f) => f.path);
   const allContent = diff.files
     .map((f) => f.content ?? f.diff)
@@ -361,6 +384,8 @@ function detectPatterns(diff: DiffContext): string[] {
 
     if (pathMatch || contentMatch) {
       detected.push(rule.id);
+      const matchedVia = pathMatch && contentMatch ? "path+content" : pathMatch ? "path" : "content";
+      logger.debug(`Pattern "${rule.id}" matched via ${matchedVia}`);
     }
   }
 
@@ -372,8 +397,6 @@ function extractChangedAreas(diff: DiffContext): string[] {
 
   for (const file of diff.files) {
     const parts = file.path.split("/");
-    // Use the first meaningful directory as the "area"
-    // Skip common top-level dirs like src/, lib/, app/
     const skipDirs = new Set(["src", "lib", "app", "pkg", "internal", "cmd"]);
     for (const part of parts.slice(0, -1)) {
       if (!skipDirs.has(part)) {

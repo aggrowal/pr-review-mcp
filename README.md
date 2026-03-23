@@ -134,9 +134,102 @@ Lives at `~/.pr-review-mcp/config.json`. You can edit it directly:
       "repoUrl": "https://github.com/org/payments-service",
       "mainBranch": "develop"
     }
+  },
+  "logLevel": "info",
+  "logFile": true
+}
+```
+
+## Logging and debugging
+
+The server writes structured logs to help trace what is happening at every step. Three output sinks are available:
+
+| Sink | When active | Purpose |
+|---|---|---|
+| **stderr** | Always | Universal fallback. Visible in terminal, captured by process managers, shown in IDE MCP server logs. |
+| **MCP notifications** | After transport connects | Structured log messages sent to the client via the MCP protocol. IDEs that support the logging capability display these in their UI. |
+| **File** | Opt-in | Appends to a log file for post-mortem debugging. Off by default. |
+
+### Log levels
+
+| Level | What you see |
+|---|---|
+| `error` | Step failures with full context: the git command that failed, its stderr output, config state. Always shown. |
+| `warn` | Recoverable issues: file content read fallbacks, numstat failures, fuzzy branch match attempts. |
+| `info` (default) | Progress indicators: each pipeline step with timing, detection summaries, skill matching counts, assembly stats. Tells you the session is moving and what it did. |
+| `debug` | Everything above plus raw git commands and output, per-file processing, detection scoring, skill filter reasoning per skill, full input and output of each function. |
+
+### Configuration
+
+Three sources control the log level and file sink, applied in precedence order (first match wins):
+
+| Source | Log level | Log file |
+|---|---|---|
+| CLI argument | `--log-level=debug` | `--log-file` (default path) or `--log-file=/custom/path.log` |
+| Environment variable | `PR_REVIEW_LOG=debug` | -- |
+| Config file | `"logLevel": "debug"` | `"logFile": true` (default path) or `"logFile": "/custom/path.log"` |
+| Default | `info` | off |
+
+The default log file path is `~/.pr-review-mcp/debug.log`.
+
+### Enabling debug mode
+
+**In Cursor** -- add args or env to `.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "pr-review": {
+      "command": "node",
+      "args": ["/path/to/pr-review-mcp/dist/index.js", "--log-level=debug", "--log-file"]
+    }
   }
 }
 ```
+
+**In Claude Code** -- add env to your MCP config:
+
+```json
+{
+  "mcpServers": {
+    "pr-review": {
+      "command": "node",
+      "args": ["/path/to/pr-review-mcp/dist/index.js"],
+      "env": {
+        "PR_REVIEW_LOG": "debug"
+      }
+    }
+  }
+}
+```
+
+**Via config file** -- edit `~/.pr-review-mcp/config.json`:
+
+```json
+{
+  "logLevel": "debug",
+  "logFile": true
+}
+```
+
+### Example output
+
+At `info` level, a typical review run produces:
+
+```
+[2025-03-23T10:15:30.100Z] [INFO] pr-review-mcp v0.1.0 started
+[2025-03-23T10:15:31.200Z] [INFO] pr_review: starting
+[2025-03-23T10:15:31.250Z] [INFO] T1: Project guard [48ms]
+[2025-03-23T10:15:31.300Z] [INFO] T2: Branch resolver [45ms]
+[2025-03-23T10:15:31.800Z] [INFO] T3: Diff extractor [498ms]
+[2025-03-23T10:15:31.810Z] [INFO] Detected: language=typescript, frameworks=[react], patterns=[rest-api, auth]
+[2025-03-23T10:15:31.811Z] [INFO] Skills: 3 matched, 0 skipped
+[2025-03-23T10:15:31.820Z] [INFO] Orchestrator: detect + filter [18ms]
+[2025-03-23T10:15:31.821Z] [INFO] Assembly [1ms]
+[2025-03-23T10:15:31.822Z] [INFO] pr_review: complete
+```
+
+At `debug` level, each step additionally logs git commands, raw output, detection scoring, and per-skill filter reasoning.
 
 ## Skill registry
 

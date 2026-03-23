@@ -5,6 +5,9 @@ import { tmpdir } from "os";
 import { createMockRepo, type MockRepo } from "./helpers/git-mock.js";
 import { runProjectGuard } from "../src/tools/t1-project-guard.js";
 import { writeConfig } from "../src/config.js";
+import { createNullLogger } from "../src/logger.js";
+
+const logger = createNullLogger();
 
 let repo: MockRepo;
 let configPath: string;
@@ -37,7 +40,7 @@ describe("runProjectGuard", () => {
       configPath
     );
 
-    const result = runProjectGuard(repo.path, configPath);
+    const result = runProjectGuard(repo.path, logger, configPath);
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.projectName).toBe(projectName);
@@ -49,7 +52,7 @@ describe("runProjectGuard", () => {
   it("fails when not in a git repo", () => {
     const nonGitDir = mkdtempSync(join(tmpdir(), "pr-review-no-git-"));
     try {
-      const result = runProjectGuard(nonGitDir, configPath);
+      const result = runProjectGuard(nonGitDir, logger, configPath);
       expect(result.ok).toBe(false);
       if (!result.ok) {
         expect(result.reason).toContain("git repository");
@@ -62,7 +65,7 @@ describe("runProjectGuard", () => {
   it("fails when project is not configured", () => {
     writeConfig({ version: 1, projects: {} }, configPath);
 
-    const result = runProjectGuard(repo.path, configPath);
+    const result = runProjectGuard(repo.path, logger, configPath);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.reason).toContain("not configured");
@@ -88,7 +91,7 @@ describe("runProjectGuard", () => {
     const subDir = join(repo.path, "subdir");
     mkdirSync(subDir, { recursive: true });
 
-    const result = runProjectGuard(subDir, configPath);
+    const result = runProjectGuard(subDir, logger, configPath);
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.projectName).toBe(projectName);
