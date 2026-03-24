@@ -133,7 +133,20 @@ The tarball is named `aggrowal-pr-review-mcp-0.1.0.tgz` (version may differ). To
 
 ### 4. Publishing and discoverability (maintainers)
 
-**npm (required for `npx`)** — The registry holds the tarball; `npx -y aggrowal-pr-review-mcp` downloads and runs it. From a clean checkout:
+**npm (required for `npx`)** — The registry holds the tarball; `npx -y aggrowal-pr-review-mcp` downloads and runs it.
+
+**CI: publish on every push to `main`** — [.github/workflows/publish-npm.yml](.github/workflows/publish-npm.yml) runs `npm ci`, `npm test`, `npm run build`, bumps the **patch** version in `package.json`, runs `npm publish`, then commits `package.json` and `package-lock.json` back to `main` with `[skip ci]` in the message so the workflow does not loop.
+
+Configure these **GitHub repository secrets** (Settings → Secrets and variables → Actions):
+
+| Secret | Purpose |
+|--------|---------|
+| `NPM_TOKEN` | Required. npm [granular access token](https://docs.npmjs.com/about-access-tokens) (or automation token) with permission to publish `aggrowal-pr-review-mcp`. |
+| `RELEASE_GITHUB_TOKEN` | Optional. A personal access token with `contents: write` on this repo. Use if [branch protection](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches) blocks the default `GITHUB_TOKEN` from pushing the version-bump commit to `main`. If unset, the workflow uses `github.token`. |
+
+You can also trigger a publish manually from the Actions tab (**workflow_dispatch**).
+
+**Manual publish** from a clean checkout (if you are not using CI):
 
 ```bash
 npm login
