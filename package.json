@@ -1,6 +1,6 @@
 {
   "name": "aggrowal-pr-review-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MCP server: multi-track PR reviews from local git diffs + Anthropic/OpenAI (not GitHub API)",
   "mcpName": "io.github.aggrowal/aggrowal-pr-review-mcp",
   "type": "module",
