@@ -15,14 +15,8 @@ import { runBranchResolver } from "../src/tools/t2-branch-resolver.js";
 import { runDiffExtractor } from "../src/tools/t3-diff-extractor.js";
 import { detectProjectContext, filterSkills } from "../src/orchestrator/detect.js";
 import { createNullLogger } from "../src/logger.js";
-
-import * as correctness from "../src/skills/correctness/index.js";
-import * as securityGeneric from "../src/skills/security-generic/index.js";
-import * as redundancy from "../src/skills/redundancy/index.js";
-
-import type { SkillModule } from "../src/types.js";
-
-const SKILL_REGISTRY: SkillModule[] = [correctness, securityGeneric, redundancy];
+import { SKILL_REGISTRY } from "../src/skills/registry.js";
+import { buildAssembledPrompt } from "../src/prompt/assemble.js";
 const logger = createNullLogger();
 
 let repo: MockRepo;
@@ -112,32 +106,76 @@ describe("Full pipeline integration", () => {
       logger
     );
 
-    // All three default skills are wildcard, should all match
-    expect(matched).toHaveLength(3);
-    expect(skipped).toHaveLength(0);
+    // accessibility-i18n requires frontend-ui signal; auth-only changes should skip it
+    expect(matched).toHaveLength(9);
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0].skill.id).toBe("accessibility-i18n");
 
-    // Build prompt for each matched skill
-    const prompts = SKILL_REGISTRY.filter((s) =>
-      matched.some((m) => m.id === s.metadata.id)
-    ).map((s) => s.buildPrompt(diff, ctx));
+    const assembledPrompt = buildAssembledPrompt(diff, ctx, matched, skipped);
+    expect(assembledPrompt).toContain("## Track execution contract");
+    expect(assembledPrompt).toContain("### correctness");
+    expect(assembledPrompt).toContain("## Final output instructions");
+    expect(assembledPrompt).toContain(
+      "Executed tracks are exactly the [run] entries in Skills, in the same order."
+    );
+    expect(assembledPrompt).toContain(
+      "Include every heading listed for each executed track in Track execution contract."
+    );
+    expect(assembledPrompt).toContain("\"contractCompliance\": {");
+    expect(assembledPrompt).toContain("\"status\": \"PASS | FAIL\"");
+    expect(assembledPrompt).toContain("all pointers are positive");
 
-    // Verify prompts contain the diff content
-    for (const prompt of prompts) {
-      expect(prompt).toContain("login.ts");
-      expect(prompt).toContain("register.ts");
+    // Build prompt for each matched skill, keyed by id for position-independence
+    const promptMap = new Map<string, string>();
+    for (const s of SKILL_REGISTRY) {
+      if (matched.some((m) => m.id === s.metadata.id)) {
+        promptMap.set(s.metadata.id, s.buildPrompt(diff, ctx));
+      }
     }
 
-    // Verify correctness prompt checks for the right things
-    expect(prompts[0]).toContain("Logic errors");
-    expect(prompts[0]).toContain("Null / undefined");
+    // Verify correctness prompt covers expanded practical taxonomy
+    const correctnessPrompt = promptMap.get("correctness")!;
+    expect(correctnessPrompt).toContain("Contract and Invariant Correctness");
+    expect(correctnessPrompt).toContain("Data Integrity and Mutation Safety");
+    expect(correctnessPrompt).toContain("Error and Failure Semantics");
+    expect(correctnessPrompt).toContain("Concurrency and Async Ordering");
+    expect(correctnessPrompt).toContain("Time and Idempotency Semantics");
+    expect(correctnessPrompt).toContain("API and Data-Shape Correctness");
+    expect(correctnessPrompt).toContain("Resource Lifecycle and Cleanup Correctness");
 
-    // Verify security prompt checks for the right things
-    expect(prompts[1]).toContain("Hardcoded secrets");
-    expect(prompts[1]).toContain("Injection");
+    // Verify correctness anti-noise guardrails
+    expect(correctnessPrompt).toContain("concrete failure scenario");
+    expect(correctnessPrompt).toContain("Do not flag style, naming, formatting, or refactor preferences.");
+    expect(correctnessPrompt).not.toContain("<<<UNTRUSTED_DIFF_BEGIN>>>");
+    expect(correctnessPrompt).not.toContain("## Diff");
 
-    // Verify redundancy prompt includes full file content
-    expect(prompts[2]).toContain("Full file");
-    expect(prompts[2]).toContain("Code duplication");
+    // Verify security prompt covers expanded checklist categories
+    const securityPrompt = promptMap.get("security-generic")!;
+    expect(securityPrompt).toContain("Hardcoded secrets");
+    expect(securityPrompt).toContain("Injection");
+    expect(securityPrompt).toContain("BOLA / IDOR");
+    expect(securityPrompt).toContain("SSRF");
+    expect(securityPrompt).toContain("Connection and handle leaks");
+    expect(securityPrompt).toContain("Unsafe deserialization");
+    expect(securityPrompt).toContain("JWT and self-contained token");
+    expect(securityPrompt).toContain("Vulnerable or untrusted dependencies");
+    expect(securityPrompt).not.toContain("<<<UNTRUSTED_DIFF_BEGIN>>>");
+
+    // Verify upgraded redundancy prompt breadth
+    const redundancyPrompt = promptMap.get("redundancy")!;
+    expect(redundancyPrompt).toContain("Duplicate Logic and Near-Duplicates");
+    expect(redundancyPrompt).toContain("Dead and Unreachable Code");
+    expect(redundancyPrompt).toContain("Premature Abstraction and Over-Engineering");
+    expect(redundancyPrompt).toContain("Debug and Review Noise");
+
+    // Verify representative new tracks are active in auth/backend context
+    expect(promptMap.get("performance-scalability")).toBeDefined();
+    expect(promptMap.get("reliability-resilience")).toBeDefined();
+    expect(promptMap.get("api-contract-compatibility")).toBeDefined();
+    expect(promptMap.get("testing-quality")).toBeDefined();
+    expect(promptMap.get("observability-operability")).toBeDefined();
+    expect(promptMap.get("maintainability-design")).toBeDefined();
+    expect(promptMap.get("accessibility-i18n")).toBeUndefined();
   });
 
   it("handles multi-language projects correctly", () => {

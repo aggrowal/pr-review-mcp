@@ -17,16 +17,16 @@ import {
   parseCliArgs,
   resolveLogConfig,
 } from "./logger.js";
-
-import type { DiffContext, DetectedContext, SkillMetadata, SkillModule } from "./types.js";
-
-// ---- Skill registry ----
-
-import * as correctness from "./skills/correctness/index.js";
-import * as securityGeneric from "./skills/security-generic/index.js";
-import * as redundancy from "./skills/redundancy/index.js";
-
-const SKILL_REGISTRY: SkillModule[] = [correctness, securityGeneric, redundancy];
+import { SKILL_REGISTRY } from "./skills/registry.js";
+import { buildAssembledPromptWithTelemetry } from "./prompt/assemble.js";
+import {
+  executeReview,
+  ReviewExecutionError,
+} from "./review/execute-review.js";
+import {
+  buildPrReviewErrorJson,
+  buildPrReviewSuccessJson,
+} from "./review/tool-result.js";
 
 // ---- Logger initialization ----
 
@@ -44,7 +44,7 @@ const logger = new Logger(logConfig);
 // ---- Server ----
 
 const server = new McpServer(
-  { name: "pr-review-mcp", version: "0.1.0" },
+  { name: "aggrowal-pr-review-mcp", version: "0.1.0" },
   { capabilities: { logging: {} } },
 );
 
@@ -134,12 +134,12 @@ server.tool(
   }
 );
 
-// ---- Prompt: @pr_review ----
+// ---- Tool: pr_review ----
 
-server.prompt(
+server.tool(
   "pr_review",
   "Run a full PR review on a specified branch. " +
-    "Usage: @pr_review branch: feature/my-branch",
+    "Usage: @pr_review branch: feature/my-branch [reviewInstructions: focus areas]",
   {
     branch: z
       .string()
@@ -152,9 +152,21 @@ server.prompt(
         "Working directory to run from. Defaults to process.cwd(). " +
           "Most IDEs inject this automatically."
       ),
+    reviewInstructions: z
+      .string()
+      .trim()
+      .max(2000)
+      .optional()
+      .describe(
+        "Optional trusted reviewer focus/instructions to include in prompt assembly (max 2000 chars)."
+      ),
   },
-  async ({ branch, cwd: cwdArg }) => {
+  async ({ branch, cwd: cwdArg, reviewInstructions }) => {
     const cwd = cwdArg ?? process.cwd();
+    const trustedReviewInstructions =
+      reviewInstructions && reviewInstructions.length > 0
+        ? reviewInstructions
+        : undefined;
     logger.info(`pr_review: starting`, { branch, cwd });
 
     // T1: Project guard
@@ -165,13 +177,11 @@ server.prompt(
       endT1({ status: "failed" });
       const detail = guard.detail ? `\n\nDetail: ${guard.detail}` : "";
       return {
-        messages: [
+        isError: true,
+        content: [
           {
-            role: "user" as const,
-            content: {
-              type: "text" as const,
-              text: `PR Review blocked\n\nReason: ${guard.reason}\n\nWhat to do: ${guard.hint}${detail}`,
-            },
+            type: "text" as const,
+            text: `PR Review blocked\n\nReason: ${guard.reason}\n\nWhat to do: ${guard.hint}${detail}`,
           },
         ],
       };
@@ -186,13 +196,11 @@ server.prompt(
       endT2({ status: "failed" });
       const detail = branchResult.detail ? `\n\nDetail: ${branchResult.detail}` : "";
       return {
-        messages: [
+        isError: true,
+        content: [
           {
-            role: "user" as const,
-            content: {
-              type: "text" as const,
-              text: `Branch resolution failed\n\nReason: ${branchResult.reason}\n\nWhat to do: ${branchResult.hint}${detail}`,
-            },
+            type: "text" as const,
+            text: `Branch resolution failed\n\nReason: ${branchResult.reason}\n\nWhat to do: ${branchResult.hint}${detail}`,
           },
         ],
       };
@@ -207,13 +215,11 @@ server.prompt(
       endT3({ status: "failed" });
       const detail = diffResult.detail ? `\n\nDetail: ${diffResult.detail}` : "";
       return {
-        messages: [
+        isError: true,
+        content: [
           {
-            role: "user" as const,
-            content: {
-              type: "text" as const,
-              text: `Diff extraction failed\n\nReason: ${diffResult.reason}\n\nWhat to do: ${diffResult.hint}${detail}`,
-            },
+            type: "text" as const,
+            text: `Diff extraction failed\n\nReason: ${diffResult.reason}\n\nWhat to do: ${diffResult.hint}${detail}`,
           },
         ],
       };
@@ -230,121 +236,127 @@ server.prompt(
       SKILL_REGISTRY.map((s) => s.metadata),
       logger
     );
+    logger.info(
+      `Skills selected: ${matched.map((skill) => skill.id).join(", ") || "none"}`
+    );
+    if (skipped.length > 0) {
+      logger.info(
+        `Skills skipped: ${skipped
+          .map((entry) => `${entry.skill.id} (${entry.reason})`)
+          .join("; ")}`
+      );
+    }
     endDetect({ language: detectedCtx.language, frameworks: detectedCtx.framework, patterns: detectedCtx.patterns, matched: matched.length, skipped: skipped.length });
 
     // Assembly
     const endAssembly = logger.startStep("Assembly");
-    const assembledPrompt = buildAssembledPrompt(
+    const assembled = buildAssembledPromptWithTelemetry(
       diff,
       detectedCtx,
       matched,
-      skipped
+      skipped,
+      { reviewInstructions: trustedReviewInstructions }
     );
-    endAssembly({ skills: matched.length, promptChars: assembledPrompt.length });
+    const assembledPrompt = assembled.prompt;
+    const telemetry = assembled.telemetry;
+    const contractPreview = assembled.trackContracts
+      .map((track) =>
+        `${track.trackId}[${track.headings
+          .map((heading) => `${heading.id}:${heading.subpoints.length}`)
+          .join(",")}]`
+      )
+      .join(" | ");
 
-    logger.info("pr_review: complete");
+    logger.info(
+      `Assembly coverage contract: tracks=${telemetry.matchedTrackCount}, headings=${telemetry.headingCount}, subpoints=${telemetry.subpointCount}`
+    );
+    logger.info(
+      `Assembly prompt size: total=${telemetry.totalChars}, static=${telemetry.staticChars}, payload=${telemetry.payloadChars}, tracks=${telemetry.trackChars}`
+    );
+    logger.debug("Assembly contract details", { contract: contractPreview });
 
-    return {
-      messages: [
-        {
-          role: "user" as const,
-          content: {
+    endAssembly({
+      skills: matched.length,
+      promptChars: telemetry.totalChars,
+      staticChars: telemetry.staticChars,
+      payloadChars: telemetry.payloadChars,
+      trackChars: telemetry.trackChars,
+      headings: telemetry.headingCount,
+      subpoints: telemetry.subpointCount,
+    });
+
+    // Execute review
+    const endExecution = logger.startStep("Execution");
+    try {
+      const execution = await executeReview({
+        assembledPrompt,
+        trackContracts: assembled.trackContracts,
+        logger,
+        providerConfig: config.reviewRuntime,
+        maxRetries: config.reviewRuntime.maxRetries,
+      });
+
+      logger.execution("complete", {
+        provider: execution.provider,
+        model: execution.model,
+        attempts: execution.attempts,
+        latencyMs: execution.latencyMs,
+        inputTokens: execution.usage?.inputTokens,
+        outputTokens: execution.usage?.outputTokens,
+        totalTokens: execution.usage?.totalTokens,
+      });
+      endExecution({
+        provider: execution.provider,
+        model: execution.model,
+        attempts: execution.attempts,
+        latencyMs: execution.latencyMs,
+      });
+
+      logger.info("pr_review: complete");
+      return {
+        content: [
+          {
             type: "text" as const,
-            text: assembledPrompt,
+            text: buildPrReviewSuccessJson({
+              review: execution.report,
+              provider: execution.provider,
+              model: execution.model,
+              attempts: execution.attempts,
+              latencyMs: execution.latencyMs,
+              usage: execution.usage,
+            }),
           },
-        },
-      ],
-    };
+        ],
+      };
+    } catch (error) {
+      endExecution({ status: "failed" });
+
+      const executionError =
+        error instanceof ReviewExecutionError
+          ? error
+          : new ReviewExecutionError(
+              "provider_error",
+              "Unexpected execution failure.",
+              { detail: String(error) }
+            );
+
+      logger.error("Review execution failed", {
+        code: executionError.code,
+        detail: executionError.detail,
+      });
+
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text" as const,
+            text: buildPrReviewErrorJson(executionError),
+          },
+        ],
+      };
+    }
   }
 );
-
-// ---- Assembled prompt builder ----
-
-function buildAssembledPrompt(
-  diff: DiffContext,
-  ctx: DetectedContext,
-  matchedSkillMeta: SkillMetadata[],
-  skippedSkillMeta: { skill: SkillMetadata; reason: string }[]
-): string {
-  const skillSections = SKILL_REGISTRY.filter((s) =>
-    matchedSkillMeta.some((m) => m.id === s.metadata.id)
-  )
-    .map((s) => {
-      const prompt = s.buildPrompt(diff, ctx);
-      return `## TRACK: ${s.metadata.id}\n\n${prompt}`;
-    })
-    .join("\n\n---\n\n");
-
-  const fileList = diff.files
-    .map(
-      (f) => `  - ${f.path} (${f.status}, +${f.additions}/-${f.deletions})`
-    )
-    .join("\n");
-
-  const matchedList = matchedSkillMeta
-    .map((s) => `  [run] ${s.id} -- ${s.description}`)
-    .join("\n");
-
-  const skippedList =
-    skippedSkillMeta.length > 0
-      ? "\n" +
-        skippedSkillMeta
-          .map((s) => `  [skip] ${s.skill.id} -- ${s.reason}`)
-          .join("\n")
-      : "";
-
-  return `You are performing a PR review. Execute each TRACK below.
-
-## Review context
-- Project: ${diff.projectName}
-- Repo: ${diff.repoUrl}
-- Branch: ${diff.headBranch} -> ${diff.baseBranch}
-- Language: ${ctx.language}
-- Frameworks: ${ctx.framework.join(", ") || "none"}
-- Patterns: ${ctx.patterns.join(", ") || "none"}
-- Files changed (${diff.files.length}):
-${fileList}
-- Total: +${diff.totalAdditions} / -${diff.totalDeletions}
-
-## Skills
-${matchedList}${skippedList}
-
-## Execution instructions
-If your environment supports parallel sub-agents or concurrent tool calls,
-execute each TRACK simultaneously. Otherwise execute them sequentially.
-Collect ALL findings before writing the final report.
-
----
-
-${skillSections}
-
----
-
-## Final report instructions
-After all tracks complete, synthesize a single report using this structure:
-
-### PR Review: ${diff.projectName}
-**Branch:** \`${diff.headBranch}\` -> \`${diff.baseBranch}\`
-**Stack:** ${ctx.language}${ctx.framework.length ? " / " + ctx.framework.join(", ") : ""}
-**Verdict:** APPROVE | REQUEST_CHANGES | NEEDS_DISCUSSION
-
-Verdict rules:
-- Any critical or high severity finding -> REQUEST_CHANGES
-- Any medium finding with no critical/high -> NEEDS_DISCUSSION
-- All findings low/info or positive only -> APPROVE
-
-#### Strengths
-(list positive findings from all tracks)
-
-#### Issues
-For each improvement finding, grouped by severity (critical -> high -> medium -> low):
-- **[SEVERITY] Track: filename:lines** -- summary
-  - Detail: explanation
-  - Fix: concrete suggestion
-
-#### Summary
-One paragraph overall assessment.`;
-}
 
 // ---- Start ----
 
@@ -352,7 +364,7 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   logger.setMcpServer(server);
-  logger.info("pr-review-mcp v0.1.0 started", {
+  logger.info("aggrowal-pr-review-mcp v0.1.0 started", {
     level: logConfig.level,
     filePath: logConfig.filePath ?? "none",
     sinks: ["stderr", "mcp", ...(logConfig.filePath ? ["file"] : [])],

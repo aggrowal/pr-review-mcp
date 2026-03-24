@@ -3,60 +3,70 @@ import type { SkillMetadata, DiffContext, DetectedContext } from "../../types.js
 export const metadata: SkillMetadata = {
   id: "redundancy",
   name: "Redundancy",
-  description: "Duplication, dead code, unused imports, over-engineering.",
+  description:
+    "Duplicate logic, dead paths, unused artifacts, speculative abstraction, and avoidable waste.",
   requires: {
     language: ["*"],
     framework: ["*"],
   },
   produces: "redundancy",
 };
-
-export function buildPrompt(diff: DiffContext, ctx: DetectedContext): string {
-  const fileEntries = diff.files
-    .filter((f) => f.status !== "deleted")
-    .map((f) => {
-      const parts: string[] = [];
-      parts.push(`### ${f.path} (${f.status}, +${f.additions}/-${f.deletions})`);
-      parts.push("#### Diff");
-      parts.push(`\`\`\`\n${f.diff}\n\`\`\``);
-      if (f.content) {
-        parts.push("#### Full file");
-        parts.push(`\`\`\`\n${f.content}\n\`\`\``);
-      }
-      return parts.join("\n");
-    })
-    .join("\n\n");
-
+export function buildPrompt(_diff: DiffContext, ctx: DetectedContext): string {
   return `You are reviewing code for **redundancy and waste** in a ${ctx.language} project.
-Analyze the diff and full file contents below. The full file is provided so you can detect duplication against existing code.
+Use the shared changed-files payload from the parent prompt to detect duplication and unnecessary complexity.
 
 ## What to check
 
-1. **Code duplication** -- new code that duplicates logic already present in the same file or another changed file. Look for copy-paste patterns with minor variations.
-2. **Dead code** -- functions, variables, classes, or branches that are defined but never called/used within the visible scope
-3. **Unused imports** -- modules imported but not referenced in the file
-4. **Leftover debug code** -- console.log, print(), debugger statements, TODO/FIXME/HACK comments that ship to production
-5. **Over-engineering** -- abstractions without a second use case, unnecessary indirection layers, premature generalization
-6. **Reinvented utilities** -- reimplementing what the language stdlib or a project dependency already provides (e.g., hand-rolling array dedup when Set exists)
+### A. Duplicate Logic and Near-Duplicates
+
+1. **Direct copy-paste duplication** -- identical or almost-identical logic reintroduced in new code.
+2. **Structural near-duplicates** -- same control flow and behavior with only renamed variables/literals.
+3. **Cross-file duplicate behavior** -- logic in one changed file re-implements behavior that already exists in another changed file.
+4. **Duplicate validation/parsing branches** -- repeated input checks or transformation pipelines that should be centralized.
+
+### B. Dead and Unreachable Code
+
+5. **Unused declarations** -- functions, classes, constants, or locals that are never read/called.
+6. **Unreachable branches** -- conditions that cannot be true given visible logic.
+7. **Write-only state** -- assignments whose values are never consumed.
+8. **Legacy fallback leftovers** -- old code paths retained after migration without active usage.
+
+### C. Import/Dependency Redundancy
+
+9. **Unused imports/exports** -- imported/exported symbols with no observable usage.
+10. **Parallel utility dependencies** -- multiple libs solving the same problem in nearby code paths without reason.
+11. **Redundant wrappers** -- wrappers around wrappers that add no policy, validation, or adaptation value.
+
+### D. Redundant Computation and Data Movement
+
+12. **Repeat computation** -- same expensive or non-trivial transform repeated instead of reused.
+13. **Unnecessary conversion chains** -- data converted back and forth with no semantic benefit.
+14. **Redundant condition fragments** -- identical statements repeated in each conditional branch.
+15. **Over-copying data** -- needless cloning/spreading/serialization where immutable guarantees already hold.
+
+### E. Premature Abstraction and Over-Engineering
+
+16. **Single-use abstractions** -- generic interfaces/factories/strategy layers with only one implementation and no near-term second caller.
+17. **Speculative extension points** -- hooks and options added for hypothetical future cases.
+18. **Indirection without signal** -- additional files/classes/functions that do not improve clarity, reuse, or policy control.
+
+### F. Reinvented Utilities
+
+19. **Stdlib reimplementation** -- custom code replacing established language/library primitives.
+20. **Reimplemented framework behavior** -- manual plumbing where framework already provides robust primitives.
+21. **Custom helper drift** -- local helpers diverging from existing project utility contracts for the same task.
+
+### G. Debug and Review Noise
+
+22. **Leftover debug instrumentation** -- console logs, temporary dumps, print statements, ad hoc flags, or debugger hooks.
+23. **Temporary comments/markers shipped** -- TODO/FIXME/HACK notes left in production code without issue tracking context.
+24. **Noise-only scaffolding** -- placeholder files/branches inserted without active behavior.
 
 ## Rules
 
-- For duplication, reference both the new code and the existing code it duplicates. Provide file paths and line ranges for both.
-- Do not flag intentional repetition where abstraction would reduce clarity (e.g., similar test cases).
-- Positive findings are encouraged when the code avoids common redundancy traps (good use of shared utilities, clean imports, etc.).
-
-## Changed files
-
-${fileEntries}
-
-## Output format
-
-For each finding, output:
-- Polarity: positive | improvement
-- Severity (improvements only): critical | high | medium | low
-- File: <path>
-- Lines: <start>-<end>
-- Summary: one-line description
-- Detail: full explanation
-- Suggestion (improvements only): the fix`;
+- For duplication, cite both locations: the new location and the existing location it overlaps.
+- Do not flag intentional repetition where abstraction would hurt readability (for example, explicit test cases).
+- Distinguish true waste from deliberate trade-offs (clarity, safety, or compatibility).
+- Prefer concrete cleanup suggestions that reduce code while preserving behavior.
+- Positive findings are encouraged when code removes duplication, dead paths, or unnecessary abstraction.`;
 }

@@ -27,6 +27,9 @@ describe("readConfig", () => {
     const config = readConfig(configPath);
     expect(config.version).toBe(1);
     expect(config.projects).toEqual({});
+    expect(config.reviewRuntime.provider).toBe("anthropic");
+    expect(config.reviewRuntime.timeoutMs).toBe(45000);
+    expect(config.reviewRuntime.maxRetries).toBe(1);
   });
 
   it("parses a valid config file", () => {
@@ -49,6 +52,33 @@ describe("readConfig", () => {
     expect(config.projects["myproject"].repoUrl).toBe(
       "https://github.com/org/myproject"
     );
+    expect(config.reviewRuntime.provider).toBe("anthropic");
+  });
+
+  it("parses review runtime settings when provided", () => {
+    writeConfig(
+      {
+        version: 1,
+        projects: {},
+        reviewRuntime: {
+          provider: "openai",
+          model: "gpt-4.1",
+          timeoutMs: 30000,
+          maxRetries: 2,
+          maxOutputTokens: 4096,
+          temperature: 0.2,
+        },
+      },
+      configPath
+    );
+
+    const config = readConfig(configPath);
+    expect(config.reviewRuntime.provider).toBe("openai");
+    expect(config.reviewRuntime.model).toBe("gpt-4.1");
+    expect(config.reviewRuntime.timeoutMs).toBe(30000);
+    expect(config.reviewRuntime.maxRetries).toBe(2);
+    expect(config.reviewRuntime.maxOutputTokens).toBe(4096);
+    expect(config.reviewRuntime.temperature).toBe(0.2);
   });
 
   it("throws on malformed config", () => {

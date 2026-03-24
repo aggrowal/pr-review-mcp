@@ -161,6 +161,26 @@ const PATTERN_RULES: PatternRule[] = [
     ],
   },
   {
+    id: "frontend-ui",
+    pathIndicators: [
+      /\.(tsx|jsx|vue|svelte|html|css|scss|sass|less)$/i,
+      /components?\//i,
+      /pages?\//i,
+      /views?\//i,
+      /ui\//i,
+    ],
+    contentIndicators: [
+      /<([A-Z][A-Za-z0-9]*)\b/,
+      /className\s*=/,
+      /aria-[a-z-]+\s*=/,
+      /role\s*=/,
+      /tabIndex\s*=/,
+      /useState\s*\(/,
+      /defineComponent\s*\(/,
+      /<template>/i,
+    ],
+  },
+  {
     id: "database",
     pathIndicators: [/migration/i, /schema/i, /model/i, /repositor/i, /dao/i],
     contentIndicators: [

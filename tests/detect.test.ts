@@ -191,6 +191,17 @@ describe("detectProjectContext", () => {
       const ctx = detectProjectContext(diff, logger);
       expect(ctx.patterns).toContain("testing");
     });
+
+    it("detects frontend-ui from component files", () => {
+      const diff = makeDiff([
+        {
+          path: "src/components/LoginForm.tsx",
+          content: "export function LoginForm() { return <button aria-label='login'>Log in</button>; }",
+        },
+      ]);
+      const ctx = detectProjectContext(diff, logger);
+      expect(ctx.patterns).toContain("frontend-ui");
+    });
   });
 
   describe("primaryChangedAreas", () => {
@@ -251,6 +262,14 @@ describe("filterSkills", () => {
     produces: "spring-check",
   };
 
+  const accessibilitySkill: SkillMetadata = {
+    id: "accessibility-i18n",
+    name: "Accessibility & i18n",
+    description: "frontend accessibility and localization checks",
+    requires: { patterns: ["frontend-ui"] },
+    produces: "accessibility",
+  };
+
   it("matches wildcard skills against any context", () => {
     const ctx = detectProjectContext(makeDiff([{ path: "a.rs" }]), logger);
     const result = filterSkills(ctx, [wildcardSkill], logger);
@@ -308,5 +327,36 @@ describe("filterSkills", () => {
     );
     const result = filterSkills(ctx, [springSkill], logger);
     expect(result.matched).toHaveLength(1);
+  });
+
+  it("matches pattern-gated skills for frontend-ui", () => {
+    const ctx = detectProjectContext(
+      makeDiff([
+        {
+          path: "src/components/Header.tsx",
+          content: "export const Header = () => <nav role='navigation' />;",
+        },
+      ]),
+      logger
+    );
+    const result = filterSkills(ctx, [accessibilitySkill], logger);
+    expect(result.matched).toHaveLength(1);
+    expect(result.skipped).toHaveLength(0);
+  });
+
+  it("skips pattern-gated skills when frontend-ui is absent", () => {
+    const ctx = detectProjectContext(
+      makeDiff([
+        {
+          path: "src/auth/service.ts",
+          content: "export function validateToken() { return true; }",
+        },
+      ]),
+      logger
+    );
+    const result = filterSkills(ctx, [accessibilitySkill], logger);
+    expect(result.matched).toHaveLength(0);
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipped[0].reason).toContain("patterns");
   });
 });

@@ -10,14 +10,25 @@ export const ProjectConfigSchema = z.object({
   mainBranch: z.string().default("main"),
 });
 
+export const ReviewRuntimeSchema = z.object({
+  provider: z.enum(["anthropic", "openai"]).default("anthropic"),
+  model: z.string().min(1).optional(),
+  timeoutMs: z.number().int().positive().max(120000).default(45000),
+  maxRetries: z.number().int().min(0).max(3).default(1),
+  maxOutputTokens: z.number().int().positive().max(32768).optional(),
+  temperature: z.number().min(0).max(1).optional(),
+});
+
 export const ConfigSchema = z.object({
   version: z.literal(1).default(1),
   projects: z.record(z.string(), ProjectConfigSchema).default({}),
   logLevel: z.enum(["debug", "info", "warn", "error"]).optional(),
   logFile: z.union([z.boolean(), z.string()]).optional(),
+  reviewRuntime: ReviewRuntimeSchema.default({}),
 });
 
 export type ProjectConfig = z.infer<typeof ProjectConfigSchema>;
+export type ReviewRuntimeConfig = z.infer<typeof ReviewRuntimeSchema>;
 export type Config = z.infer<typeof ConfigSchema>;
 
 // ---- Paths ----
