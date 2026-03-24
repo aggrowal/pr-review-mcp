@@ -40,6 +40,18 @@ export interface LoggerOptions {
   filePath?: string;
 }
 
+export interface ExecutionTelemetry {
+  provider: string;
+  model: string;
+  attempts?: number;
+  latencyMs?: number;
+  promptChars?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  [key: string]: unknown;
+}
+
 export class Logger {
   private level: LogLevel;
   private filePath: string | undefined;
@@ -54,7 +66,7 @@ export class Logger {
         mkdirSync(dirname(this.filePath), { recursive: true });
         this.fileReady = true;
       } catch {
-        console.error(`[pr-review-mcp] Failed to create log directory for ${this.filePath}`);
+        console.error(`[aggrowal-pr-review-mcp] Failed to create log directory for ${this.filePath}`);
       }
     }
   }
@@ -77,6 +89,10 @@ export class Logger {
 
   error(message: string, data?: Record<string, unknown>): void {
     this.log(LogLevel.ERROR, message, data);
+  }
+
+  execution(message: string, data: ExecutionTelemetry): void {
+    this.log(LogLevel.INFO, `Execution: ${message}`, data);
   }
 
   /**
@@ -124,7 +140,7 @@ export class Logger {
     const mcpLevel = MCP_LEVEL_MAP[level];
     const payload = data ? `${message} | ${JSON.stringify(data)}` : message;
     this.mcpServer
-      .sendLoggingMessage({ level: mcpLevel, logger: "pr-review-mcp", data: payload })
+      .sendLoggingMessage({ level: mcpLevel, logger: "aggrowal-pr-review-mcp", data: payload })
       .catch(() => {
         // MCP notification failure is non-fatal
       });

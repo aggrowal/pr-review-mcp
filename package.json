@@ -1,19 +1,38 @@
 {
-  "name": "pr-review-mcp",
+  "name": "aggrowal-pr-review-mcp",
   "version": "0.1.0",
-  "description": "A context-aware MCP server for intelligent, multi-track PR reviews",
+  "description": "MCP server: multi-track PR reviews from local git diffs + Anthropic/OpenAI (not GitHub API)",
+  "mcpName": "io.github.aggrowal/aggrowal-pr-review-mcp",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "pr-review-mcp": "dist/index.js"
+    "aggrowal-pr-review-mcp": "dist/index.js"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aggrowal/pr-review-mcp.git"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "pr",
+    "code-review",
+    "git",
+    "anthropic",
+    "openai"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
     "start": "node dist/index.js",
+    "prepack": "npm run build",
     "test": "vitest run",
     "test:watch": "vitest"
   },
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
     "zod": "^3.24.4"

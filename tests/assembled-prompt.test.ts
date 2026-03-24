@@ -153,10 +153,15 @@ describe("buildAssembledPrompt", () => {
     expect(prompt).toContain(
       "Allowed status values: blocker | needs_improvement | nudge | looks_good."
     );
-    expect(prompt).toContain("#### Track Coverage");
-    expect(prompt).toContain("Executed tracks are exactly the `[run]` entries in Skills");
-    expect(prompt).toContain("#### Contract Compliance");
-    expect(prompt).toContain("CONTRACT_COMPLIANCE: PASS | FAIL");
+    expect(prompt).toContain("## Final output instructions");
+    expect(prompt).toContain("Return one JSON object only.");
+    expect(prompt).toContain("\"contractCompliance\": {");
+    expect(prompt).toContain(
+      "Executed tracks are exactly the [run] entries in Skills, in the same order."
+    );
+    expect(prompt).toContain(
+      "If any required track/heading/subpoint is missing or extra, set contractCompliance.status to FAIL and list exact gaps."
+    );
     expect(prompt).toContain("Verdict rules:");
   });
 
@@ -186,13 +191,15 @@ describe("buildAssembledPrompt", () => {
     expect(prompt).toContain(
       "Allowed status values: blocker | needs_improvement | nudge | looks_good."
     );
-    expect(prompt).toContain("#### Track Coverage");
-    expect(prompt).toContain("Include every heading shown for that track in `Track execution contract`");
+    expect(prompt).toContain("## Final output instructions");
     expect(prompt).toContain(
-      "passed + failed subpoint ids must exactly cover the subpoints listed in `[subpoints]`"
+      "Include every heading listed for each executed track in Track execution contract."
     );
-    expect(prompt).toContain("#### Contract Compliance");
-    expect(prompt).toContain("CONTRACT_GAPS:");
+    expect(prompt).toContain(
+      "For each heading, passedSubpoints + failedSubpoints must exactly cover [subpoints] with no duplicates."
+    );
+    expect(prompt).toContain("\"contractCompliance\": {");
+    expect(prompt).toContain("\"gaps\": [\"required when FAIL\"]");
     expect(prompt).toContain("all pointers are positive");
   });
 

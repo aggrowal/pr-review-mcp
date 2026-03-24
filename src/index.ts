@@ -19,6 +19,14 @@ import {
 } from "./logger.js";
 import { SKILL_REGISTRY } from "./skills/registry.js";
 import { buildAssembledPromptWithTelemetry } from "./prompt/assemble.js";
+import {
+  executeReview,
+  ReviewExecutionError,
+} from "./review/execute-review.js";
+import {
+  buildPrReviewErrorJson,
+  buildPrReviewSuccessJson,
+} from "./review/tool-result.js";
 
 // ---- Logger initialization ----
 
@@ -36,7 +44,7 @@ const logger = new Logger(logConfig);
 // ---- Server ----
 
 const server = new McpServer(
-  { name: "pr-review-mcp", version: "0.1.0" },
+  { name: "aggrowal-pr-review-mcp", version: "0.1.0" },
   { capabilities: { logging: {} } },
 );
 
@@ -277,16 +285,76 @@ server.tool(
       subpoints: telemetry.subpointCount,
     });
 
-    logger.info("pr_review: complete");
+    // Execute review
+    const endExecution = logger.startStep("Execution");
+    try {
+      const execution = await executeReview({
+        assembledPrompt,
+        trackContracts: assembled.trackContracts,
+        logger,
+        providerConfig: config.reviewRuntime,
+        maxRetries: config.reviewRuntime.maxRetries,
+      });
 
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text: assembledPrompt,
-        },
-      ],
-    };
+      logger.execution("complete", {
+        provider: execution.provider,
+        model: execution.model,
+        attempts: execution.attempts,
+        latencyMs: execution.latencyMs,
+        inputTokens: execution.usage?.inputTokens,
+        outputTokens: execution.usage?.outputTokens,
+        totalTokens: execution.usage?.totalTokens,
+      });
+      endExecution({
+        provider: execution.provider,
+        model: execution.model,
+        attempts: execution.attempts,
+        latencyMs: execution.latencyMs,
+      });
+
+      logger.info("pr_review: complete");
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: buildPrReviewSuccessJson({
+              review: execution.report,
+              provider: execution.provider,
+              model: execution.model,
+              attempts: execution.attempts,
+              latencyMs: execution.latencyMs,
+              usage: execution.usage,
+            }),
+          },
+        ],
+      };
+    } catch (error) {
+      endExecution({ status: "failed" });
+
+      const executionError =
+        error instanceof ReviewExecutionError
+          ? error
+          : new ReviewExecutionError(
+              "provider_error",
+              "Unexpected execution failure.",
+              { detail: String(error) }
+            );
+
+      logger.error("Review execution failed", {
+        code: executionError.code,
+        detail: executionError.detail,
+      });
+
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text" as const,
+            text: buildPrReviewErrorJson(executionError),
+          },
+        ],
+      };
+    }
   }
 );
 
@@ -296,7 +364,7 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   logger.setMcpServer(server);
-  logger.info("pr-review-mcp v0.1.0 started", {
+  logger.info("aggrowal-pr-review-mcp v0.1.0 started", {
     level: logConfig.level,
     filePath: logConfig.filePath ?? "none",
     sinks: ["stderr", "mcp", ...(logConfig.filePath ? ["file"] : [])],

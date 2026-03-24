@@ -263,57 +263,62 @@ ${matchedList}${skippedList}
 Run tracks in parallel if available, otherwise sequentially.
 Collect findings from all tracks, then produce one final report.`;
 
-  const finalReportInstructions = `## Final report instructions
-After all tracks complete, output exactly this structure:
+  const finalReportInstructions = `## Final output instructions
+Return one JSON object only. No markdown, no backticks, no extra keys.
 
-### PR Review: ${diff.projectName}
-**Branch:** \`${diff.headBranch}\` -> \`${diff.baseBranch}\`
-**Stack:** ${ctx.language}${ctx.framework.length ? " / " + ctx.framework.join(", ") : ""}
-**Verdict:** APPROVE | REQUEST_CHANGES | NEEDS_DISCUSSION
+Use this exact shape:
+{
+  "schemaVersion": 1,
+  "project": "${diff.projectName}",
+  "branch": { "head": "${diff.headBranch}", "base": "${diff.baseBranch}" },
+  "stack": { "language": "${ctx.language}", "frameworks": [${ctx.framework.map((f) => `"${f}"`).join(", ")}] },
+  "verdict": "APPROVE | REQUEST_CHANGES | NEEDS_DISCUSSION",
+  "contractCompliance": {
+    "status": "PASS | FAIL",
+    "gaps": ["required when FAIL"],
+    "reason": "required when FAIL"
+  },
+  "trackCoverage": [
+    {
+      "trackId": "<track id from [run]>",
+      "overallStatus": "blocker | needs_improvement | nudge | looks_good",
+      "headings": [
+        {
+          "id": "<Letter>",
+          "title": "<Heading title>",
+          "status": "blocker | needs_improvement | nudge | looks_good",
+          "passedSubpoints": [1, 2],
+          "failedSubpoints": [3],
+          "why": "if failedSubpoints is empty, write exactly \\"all pointers are positive\\""
+        }
+      ]
+    }
+  ],
+  "strengths": ["concrete positives from all tracks"],
+  "issues": [
+    {
+      "status": "blocker | needs_improvement | nudge | looks_good",
+      "trackId": "<track id>",
+      "file": "relative/path.ext (optional)",
+      "lines": "line range (optional)",
+      "summary": "concise issue summary",
+      "why": "why this is a problem",
+      "betterImplementation": "concrete fix (optional)"
+    }
+  ],
+  "summary": "one concise overall paragraph"
+}
+
+Coverage and contract rules:
+- Executed tracks are exactly the [run] entries in Skills, in the same order.
+- Include every heading listed for each executed track in Track execution contract.
+- For each heading, passedSubpoints + failedSubpoints must exactly cover [subpoints] with no duplicates.
+- If any required track/heading/subpoint is missing or extra, set contractCompliance.status to FAIL and list exact gaps.
 
 Verdict rules:
-- Any blocker finding, or any critical/high issue -> REQUEST_CHANGES
-- Else any needs_improvement finding, or any medium issue -> NEEDS_DISCUSSION
-- Else (nudge/looks_good only) -> APPROVE
-
-Status mapping guidance:
-- blocker: must fix before merge
-- needs_improvement: should fix before merge
-- nudge: non-blocking but recommended
-- looks_good: no issue for this heading
-
-#### Track Coverage
-Executed tracks are exactly the \`[run]\` entries in Skills (ignore \`[skip]\` entries).
-Coverage is mandatory and exhaustive:
-- Include every executed track in the same order as listed in Skills.
-- Include every heading shown for that track in \`Track execution contract\`; do not omit or merge headings.
-- For each heading, passed + failed subpoint ids must exactly cover the subpoints listed in \`[subpoints]\`, with no duplicates.
-- If any required track/heading/subpoint is missing, mark contract compliance as FAIL and list gaps.
-- **Track:** <id>
-- **Overall:** blocker | needs_improvement | nudge | looks_good
-- **Headings:**
-  - **<Letter>. <Heading> [subpoints]** -- <status>
-    - Passed subpoints: <ids or "none">
-    - Failed subpoints: <ids or "none">
-    - Why: <required when failed != none; if none, write "all pointers are positive">
-
-#### Contract Compliance
-- CONTRACT_COMPLIANCE: PASS | FAIL
-- If FAIL, include:
-  - CONTRACT_GAPS: <comma-separated missing track ids and/or heading ids and/or subpoint ids>
-  - CONTRACT_REASON: <why coverage could not be completed>
-
-#### Strengths
-List concrete positives from all tracks.
-
-#### Issues
-Group by status (blocker -> needs_improvement -> nudge):
-- **[status] Track: filename:lines** -- summary
-  - Why it failed: concise explanation
-  - Better implementation: concrete fix
-
-#### Summary
-One concise paragraph overall.`;
+- Any blocker issue -> REQUEST_CHANGES
+- Else any needs_improvement issue -> NEEDS_DISCUSSION
+- Else -> APPROVE`;
 
   const assembledPrompt = `${prelude}
 

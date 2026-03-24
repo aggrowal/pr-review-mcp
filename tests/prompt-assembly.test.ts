@@ -114,15 +114,15 @@ describe("Full pipeline integration", () => {
     const assembledPrompt = buildAssembledPrompt(diff, ctx, matched, skipped);
     expect(assembledPrompt).toContain("## Track execution contract");
     expect(assembledPrompt).toContain("### correctness");
-    expect(assembledPrompt).toContain("#### Track Coverage");
+    expect(assembledPrompt).toContain("## Final output instructions");
     expect(assembledPrompt).toContain(
-      "Executed tracks are exactly the `[run]` entries in Skills"
+      "Executed tracks are exactly the [run] entries in Skills, in the same order."
     );
     expect(assembledPrompt).toContain(
-      "Include every heading shown for that track in `Track execution contract`"
+      "Include every heading listed for each executed track in Track execution contract."
     );
-    expect(assembledPrompt).toContain("#### Contract Compliance");
-    expect(assembledPrompt).toContain("CONTRACT_COMPLIANCE: PASS | FAIL");
+    expect(assembledPrompt).toContain("\"contractCompliance\": {");
+    expect(assembledPrompt).toContain("\"status\": \"PASS | FAIL\"");
     expect(assembledPrompt).toContain("all pointers are positive");
 
     // Build prompt for each matched skill, keyed by id for position-independence
