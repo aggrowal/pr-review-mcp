@@ -3,6 +3,10 @@ import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 import type { BranchContext, ChangedFile, DiffContext } from "../types.js";
 import type { Logger } from "../logger.js";
+import {
+  enrichDiffContext,
+  type DiffEnrichmentOptions,
+} from "../enrichment/index.js";
 
 export interface DiffExtractorOk {
   ok: true;
@@ -18,6 +22,10 @@ export interface DiffExtractorError {
 
 export type DiffExtractorResult = DiffExtractorOk | DiffExtractorError;
 
+export interface DiffExtractorOptions {
+  enrichment?: DiffEnrichmentOptions;
+}
+
 /**
  * T3 -- Diff Extractor
  *
@@ -28,7 +36,8 @@ export type DiffExtractorResult = DiffExtractorOk | DiffExtractorError;
  */
 export function runDiffExtractor(
   context: BranchContext,
-  logger: Logger
+  logger: Logger,
+  options?: DiffExtractorOptions
 ): DiffExtractorResult {
   const { repoRoot, baseBranch, headBranch } = context;
 
@@ -190,7 +199,7 @@ export function runDiffExtractor(
       files,
       totalAdditions,
       totalDeletions,
-      enrichment: undefined,
+      enrichment: enrichDiffContext(context, logger, options?.enrichment),
     },
   };
 }

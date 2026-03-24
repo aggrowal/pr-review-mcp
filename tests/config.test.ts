@@ -30,6 +30,9 @@ describe("readConfig", () => {
     expect(config.reviewRuntime.provider).toBe("anthropic");
     expect(config.reviewRuntime.timeoutMs).toBe(45000);
     expect(config.reviewRuntime.maxRetries).toBe(1);
+    expect(config.reviewRuntime.executionMode).toBe("auto");
+    expect(config.reviewRuntime.samplingIncludeContext).toBe("none");
+    expect(config.reviewRuntime.enrichment.enabled).toBe(false);
   });
 
   it("parses a valid config file", () => {
@@ -67,6 +70,14 @@ describe("readConfig", () => {
           maxRetries: 2,
           maxOutputTokens: 4096,
           temperature: 0.2,
+          executionMode: "client_sampling",
+          samplingIncludeContext: "thisServer",
+          samplingModelHint: "claude",
+          enrichment: {
+            enabled: true,
+            provider: "git",
+            maxCommits: 7,
+          },
         },
       },
       configPath
@@ -79,6 +90,12 @@ describe("readConfig", () => {
     expect(config.reviewRuntime.maxRetries).toBe(2);
     expect(config.reviewRuntime.maxOutputTokens).toBe(4096);
     expect(config.reviewRuntime.temperature).toBe(0.2);
+    expect(config.reviewRuntime.executionMode).toBe("client_sampling");
+    expect(config.reviewRuntime.samplingIncludeContext).toBe("thisServer");
+    expect(config.reviewRuntime.samplingModelHint).toBe("claude");
+    expect(config.reviewRuntime.enrichment.enabled).toBe(true);
+    expect(config.reviewRuntime.enrichment.provider).toBe("git");
+    expect(config.reviewRuntime.enrichment.maxCommits).toBe(7);
   });
 
   it("throws on malformed config", () => {

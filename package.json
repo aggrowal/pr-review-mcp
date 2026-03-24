@@ -26,6 +26,7 @@
     "dev": "tsc --watch",
     "start": "node dist/index.js",
     "prepack": "npm run build",
+    "smoke:mcp": "node scripts/smoke-mcp-client.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },

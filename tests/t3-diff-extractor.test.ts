@@ -152,4 +152,27 @@ describe("runDiffExtractor", () => {
       expect(file!.content).toContain("greet");
     }
   });
+
+  it("adds optional git enrichment when enabled", () => {
+    createBranch(repo.path, "feature/test");
+    addFiles(repo.path, {
+      "src/enriched.ts": "export const enriched = true;\n",
+    });
+    checkoutBranch(repo.path, "main");
+
+    const result = runDiffExtractor(makeContext(), logger, {
+      enrichment: {
+        enabled: true,
+        provider: "git",
+        maxCommits: 3,
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.diff.enrichment).toBeDefined();
+      expect(result.diff.enrichment?.prTitle).toBeTruthy();
+      expect(result.diff.enrichment?.prUrl).toContain("/compare/");
+    }
+  });
 });

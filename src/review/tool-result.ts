@@ -3,6 +3,18 @@ import type { LlmUsage } from "../llm/provider.js";
 import type { ReviewReport } from "../review-contract/types.js";
 import type { ReviewExecutionError } from "./execute-review.js";
 
+export type PrReviewToolErrorCode =
+  | "project_guard_failed"
+  | "branch_resolution_failed"
+  | "diff_extraction_failed"
+  | "provider_error"
+  | "invalid_output"
+  | "schema_invalid"
+  | "contract_invalid"
+  | "sampling_unavailable"
+  | "sampling_failed"
+  | "internal_error";
+
 const UsageSchema = z
   .object({
     inputTokens: z.number().int().nonnegative().optional(),
@@ -67,14 +79,28 @@ export function buildPrReviewSuccessJson(params: {
 }
 
 export function buildPrReviewErrorJson(error: ReviewExecutionError): string {
+  return buildPrReviewErrorJsonFromFields({
+    code: error.code,
+    message: error.message,
+    detail: error.detail,
+    retryable: error.retryable,
+  });
+}
+
+export function buildPrReviewErrorJsonFromFields(params: {
+  code: PrReviewToolErrorCode;
+  message: string;
+  detail?: string;
+  retryable?: boolean;
+}): string {
   return JSON.stringify(
     {
       ok: false,
       error: {
-        code: error.code,
-        message: error.message,
-        detail: error.detail,
-        retryable: error.retryable,
+        code: params.code,
+        message: params.message,
+        detail: params.detail,
+        retryable: params.retryable ?? false,
       },
     },
     null,

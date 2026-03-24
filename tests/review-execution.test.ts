@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   executeReview,
   ReviewExecutionError,
+  type SamplingExecutor,
+  type SamplingExecutorRequest,
 } from "../src/review/execute-review.js";
 import {
   LlmProviderError,
@@ -34,6 +36,31 @@ class MockProvider implements LlmProvider {
     return {
       provider: this.id,
       model: this.model,
+      text: next,
+    };
+  }
+}
+
+class MockSamplingExecutor implements SamplingExecutor {
+  readonly calls: SamplingExecutorRequest[] = [];
+  private queue: Array<string | Error>;
+
+  constructor(queue: Array<string | Error>) {
+    this.queue = [...queue];
+  }
+
+  async generate(request: SamplingExecutorRequest) {
+    this.calls.push(request);
+    const next = this.queue.shift();
+    if (next instanceof Error) {
+      throw next;
+    }
+    if (typeof next !== "string") {
+      throw new Error("MockSamplingExecutor queue exhausted");
+    }
+    return {
+      provider: "mcp_client_sampling",
+      model: "host-model",
       text: next,
     };
   }
@@ -167,5 +194,49 @@ describe("executeReview", () => {
 
     expect(result.attempts).toBe(2);
     expect(provider.calls).toHaveLength(2);
+  });
+
+  it("uses client sampling when executionMode is client_sampling", async () => {
+    const samplingExecutor = new MockSamplingExecutor([makeValidReportJson()]);
+    const result = await executeReview({
+      assembledPrompt: "Assembled prompt body",
+      trackContracts: makeTrackContracts(),
+      logger: createNullLogger(),
+      executionMode: "client_sampling",
+      samplingExecutor,
+      providerConfig: {
+        maxOutputTokens: 2048,
+        temperature: 0,
+      },
+    });
+
+    expect(result.attempts).toBe(1);
+    expect(result.provider).toBe("mcp_client_sampling");
+    expect(samplingExecutor.calls).toHaveLength(1);
+    expect(samplingExecutor.calls[0].maxTokens).toBe(2048);
+  });
+
+  it("falls back to provider in auto mode when sampling is unavailable", async () => {
+    const samplingExecutor = new MockSamplingExecutor([
+      new Error("Method not found: sampling/createMessage"),
+    ]);
+    const provider = new MockProvider([makeValidReportJson()]);
+
+    const result = await executeReview({
+      assembledPrompt: "Assembled prompt body",
+      trackContracts: makeTrackContracts(),
+      logger: createNullLogger(),
+      executionMode: "auto",
+      samplingExecutor,
+      provider,
+      providerConfig: {
+        provider: "openai",
+      },
+    });
+
+    expect(result.attempts).toBe(1);
+    expect(result.provider).toBe("openai");
+    expect(samplingExecutor.calls).toHaveLength(1);
+    expect(provider.calls).toHaveLength(1);
   });
 });

@@ -27,6 +27,10 @@ export interface ExecuteReviewOptions {
   provider?: LlmProvider;
   providerConfig?: Partial<LlmProviderConfig>;
   maxRetries?: number;
+  executionMode?: ReviewExecutionMode;
+  samplingExecutor?: SamplingExecutor;
+  samplingIncludeContext?: SamplingIncludeContext;
+  samplingModelHint?: string;
 }
 
 export interface ExecuteReviewResult {
@@ -39,10 +43,39 @@ export interface ExecuteReviewResult {
 }
 
 export type ReviewExecutionErrorCode =
+  | "sampling_unavailable"
+  | "sampling_failed"
   | "provider_error"
   | "invalid_output"
   | "schema_invalid"
   | "contract_invalid";
+
+export type ReviewExecutionMode =
+  | "auto"
+  | "provider_api"
+  | "client_sampling";
+
+export type SamplingIncludeContext = "none" | "thisServer" | "allServers";
+
+export interface SamplingExecutorRequest {
+  prompt: string;
+  systemPrompt: string;
+  maxTokens: number;
+  temperature?: number;
+  includeContext?: SamplingIncludeContext;
+  modelHint?: string;
+}
+
+export interface SamplingExecutorResult {
+  provider: string;
+  model: string;
+  text: string;
+  usage?: LlmUsage;
+}
+
+export interface SamplingExecutor {
+  generate(request: SamplingExecutorRequest): Promise<SamplingExecutorResult>;
+}
 
 export class ReviewExecutionError extends Error {
   readonly code: ReviewExecutionErrorCode;
@@ -65,8 +98,23 @@ export class ReviewExecutionError extends Error {
 export async function executeReview(
   options: ExecuteReviewOptions
 ): Promise<ExecuteReviewResult> {
-  const providerConfig = resolveProviderConfig(options.providerConfig);
-  const provider = options.provider ?? createProvider(providerConfig);
+  const executionMode = options.executionMode ?? "auto";
+  let resolvedProviderConfig: LlmProviderConfig | undefined;
+  let provider: LlmProvider | undefined = options.provider;
+
+  const getProviderConfig = (): LlmProviderConfig => {
+    if (!resolvedProviderConfig) {
+      resolvedProviderConfig = resolveProviderConfig(options.providerConfig);
+    }
+    return resolvedProviderConfig;
+  };
+
+  const getProvider = (): LlmProvider => {
+    if (provider) return provider;
+    provider = createProvider(getProviderConfig());
+    return provider;
+  };
+
   const maxRetries = options.maxRetries ?? 1;
 
   let attempt = 0;
@@ -79,22 +127,23 @@ export async function executeReview(
     const repairPrompt = buildRepairPrompt(previousIssues);
     const executionPrompt =
       options.assembledPrompt + (repairPrompt ? `\n\n${repairPrompt}` : "");
+    const attemptTarget = describeExecutionTarget(executionMode, options);
 
     options.logger.execution("attempt", {
       attempt,
-      provider: provider.id,
-      model: provider.model,
+      provider: attemptTarget.provider,
+      model: attemptTarget.model,
       promptChars: executionPrompt.length,
     });
 
     const startedAt = performance.now();
     try {
-      const response = await provider.generate({
-        prompt: executionPrompt,
-        systemPrompt: EXECUTION_SYSTEM_PROMPT,
-        timeoutMs: providerConfig.timeoutMs ?? 45000,
-        maxOutputTokens: providerConfig.maxOutputTokens,
-        temperature: providerConfig.temperature,
+      const response = await generateReviewResponse({
+        executionMode,
+        executionPrompt,
+        options,
+        getProvider,
+        getProviderConfig,
       });
       totalLatencyMs += Math.round(performance.now() - startedAt);
       lastUsage = response.usage;
@@ -121,6 +170,24 @@ export async function executeReview(
       });
     } catch (error) {
       totalLatencyMs += Math.round(performance.now() - startedAt);
+      if (error instanceof ReviewExecutionError) {
+        options.logger.warn("Execution call failed", {
+          attempt,
+          code: error.code,
+          retryable: error.retryable,
+        });
+
+        if (attempt <= maxRetries && error.retryable) {
+          previousIssues = [
+            `Execution error (${error.code}): ${error.message}`,
+            ...(error.detail ? [error.detail] : []),
+          ];
+          continue;
+        }
+
+        throw error;
+      }
+
       if (error instanceof LlmProviderError) {
         options.logger.warn("Provider call failed", {
           attempt,
@@ -258,6 +325,147 @@ function parseJsonOutput(rawOutput: string):
       reason: `Model response is not valid JSON: ${String(error)}`,
     };
   }
+}
+
+async function generateReviewResponse(params: {
+  executionMode: ReviewExecutionMode;
+  executionPrompt: string;
+  options: ExecuteReviewOptions;
+  getProvider: () => LlmProvider;
+  getProviderConfig: () => LlmProviderConfig;
+}): Promise<SamplingExecutorResult> {
+  const {
+    executionMode,
+    executionPrompt,
+    options,
+    getProvider,
+    getProviderConfig,
+  } = params;
+
+  if (executionMode === "client_sampling") {
+    return runSamplingRequest(executionPrompt, options);
+  }
+
+  if (executionMode === "provider_api") {
+    return runProviderRequest(executionPrompt, getProvider(), getProviderConfig());
+  }
+
+  if (options.samplingExecutor) {
+    try {
+      return await runSamplingRequest(executionPrompt, options);
+    } catch (error) {
+      if (!shouldFallbackFromSampling(error)) {
+        throw error;
+      }
+      options.logger.warn(
+        "Sampling unavailable; falling back to provider API execution",
+        { detail: samplingErrorDetail(error) }
+      );
+    }
+  }
+
+  return runProviderRequest(executionPrompt, getProvider(), getProviderConfig());
+}
+
+async function runSamplingRequest(
+  executionPrompt: string,
+  options: ExecuteReviewOptions
+): Promise<SamplingExecutorResult> {
+  if (!options.samplingExecutor) {
+    throw new ReviewExecutionError(
+      "sampling_unavailable",
+      "Sampling executor is not configured.",
+      {
+        retryable: false,
+      }
+    );
+  }
+
+  try {
+    return await options.samplingExecutor.generate({
+      prompt: executionPrompt,
+      systemPrompt: EXECUTION_SYSTEM_PROMPT,
+      maxTokens: options.providerConfig?.maxOutputTokens ?? 4096,
+      temperature: options.providerConfig?.temperature,
+      includeContext: options.samplingIncludeContext,
+      modelHint: options.samplingModelHint,
+    });
+  } catch (error) {
+    const detail = samplingErrorDetail(error);
+    const code = isSamplingUnavailableError(error)
+      ? "sampling_unavailable"
+      : "sampling_failed";
+    throw new ReviewExecutionError(code, "Client sampling request failed.", {
+      detail,
+      retryable: code === "sampling_failed",
+    });
+  }
+}
+
+async function runProviderRequest(
+  executionPrompt: string,
+  provider: LlmProvider,
+  providerConfig: LlmProviderConfig
+): Promise<SamplingExecutorResult> {
+  const response = await provider.generate({
+    prompt: executionPrompt,
+    systemPrompt: EXECUTION_SYSTEM_PROMPT,
+    timeoutMs: providerConfig.timeoutMs ?? 45000,
+    maxOutputTokens: providerConfig.maxOutputTokens,
+    temperature: providerConfig.temperature,
+  });
+
+  return {
+    provider: response.provider,
+    model: response.model,
+    text: response.text,
+    usage: response.usage,
+  };
+}
+
+function shouldFallbackFromSampling(error: unknown): boolean {
+  if (!(error instanceof ReviewExecutionError)) return false;
+  return error.code === "sampling_unavailable";
+}
+
+function isSamplingUnavailableError(error: unknown): boolean {
+  const detail = samplingErrorDetail(error).toLowerCase();
+  return (
+    detail.includes("method not found") ||
+    detail.includes("sampling/create") ||
+    detail.includes("capability") ||
+    detail.includes("not support")
+  );
+}
+
+function samplingErrorDetail(error: unknown): string {
+  if (!error) return "unknown sampling error";
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
+function describeExecutionTarget(
+  executionMode: ReviewExecutionMode,
+  options: ExecuteReviewOptions
+): { provider: string; model: string } {
+  if (executionMode === "client_sampling") {
+    return {
+      provider: "mcp_client_sampling",
+      model: options.samplingModelHint ?? "client-selected",
+    };
+  }
+
+  if (executionMode === "auto" && options.samplingExecutor) {
+    return {
+      provider: "auto",
+      model: options.samplingModelHint ?? "sampling->provider-fallback",
+    };
+  }
+
+  return {
+    provider: "provider_api",
+    model: options.providerConfig?.model ?? "default",
+  };
 }
 
 function validateTrackCoverageContract(

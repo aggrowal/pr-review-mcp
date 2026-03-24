@@ -5,6 +5,7 @@ import {
   PrReviewErrorSchema,
   PrReviewSuccessSchema,
   buildPrReviewErrorJson,
+  buildPrReviewErrorJsonFromFields,
   buildPrReviewSuccessJson,
 } from "../src/review/tool-result.js";
 
@@ -82,6 +83,23 @@ describe("pr_review JSON tool payload", () => {
     if (wrapper.success) {
       expect(wrapper.data.error.code).toBe("invalid_output");
       expect(wrapper.data.error.retryable).toBe(false);
+    }
+  });
+
+  it("builds preflight error payloads with stable codes", () => {
+    const json = buildPrReviewErrorJsonFromFields({
+      code: "project_guard_failed",
+      message: "Not inside a git repository.",
+      detail: "Navigate to a repository.",
+      retryable: false,
+    });
+
+    const parsed = JSON.parse(json) as unknown;
+    const wrapper = PrReviewErrorSchema.safeParse(parsed);
+    expect(wrapper.success).toBe(true);
+    if (wrapper.success) {
+      expect(wrapper.data.error.code).toBe("project_guard_failed");
+      expect(wrapper.data.error.message).toContain("git repository");
     }
   });
 });

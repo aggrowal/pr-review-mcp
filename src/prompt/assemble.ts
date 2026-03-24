@@ -187,6 +187,34 @@ function buildChangedFilesPayload(diff: DiffContext): string {
   return sections.join("\n\n");
 }
 
+function buildEnrichmentPayload(diff: DiffContext): string {
+  if (!diff.enrichment) return "";
+  const sections: string[] = [];
+
+  if (diff.enrichment.prUrl) {
+    sections.push(`- PR URL: ${sanitizePath(diff.enrichment.prUrl)}`);
+  }
+
+  if (diff.enrichment.prTitle) {
+    sections.push("- PR title:");
+    sections.push(
+      `${UNTRUSTED_BEGIN}\n${escapeSentinels(diff.enrichment.prTitle)}\n${UNTRUSTED_END}`
+    );
+  }
+
+  if (diff.enrichment.prDescription) {
+    sections.push("- PR description:");
+    sections.push(
+      `${UNTRUSTED_BEGIN}\n${escapeSentinels(
+        diff.enrichment.prDescription
+      )}\n${UNTRUSTED_END}`
+    );
+  }
+
+  if (sections.length === 0) return "";
+  return `## Additional PR metadata (untrusted)\n${sections.join("\n")}`;
+}
+
 export function buildAssembledPromptWithTelemetry(
   diff: DiffContext,
   ctx: DetectedContext,
@@ -237,6 +265,7 @@ export function buildAssembledPromptWithTelemetry(
   const reviewInstructionsSection = buildReviewInstructionsSection(
     reviewInstructions
   );
+  const enrichmentPayload = buildEnrichmentPayload(diff);
 
   const prelude = `You are performing a PR review. Execute every TRACK.
 
@@ -323,6 +352,8 @@ Verdict rules:
   const assembledPrompt = `${prelude}
 
 ${reviewInstructionsSection}
+
+${enrichmentPayload}
 
 ## Changed files payload (shared by all tracks)
 

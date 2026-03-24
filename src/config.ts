@@ -17,6 +17,20 @@ export const ReviewRuntimeSchema = z.object({
   maxRetries: z.number().int().min(0).max(3).default(1),
   maxOutputTokens: z.number().int().positive().max(32768).optional(),
   temperature: z.number().min(0).max(1).optional(),
+  executionMode: z
+    .enum(["auto", "provider_api", "client_sampling"])
+    .default("auto"),
+  samplingIncludeContext: z
+    .enum(["none", "thisServer", "allServers"])
+    .default("none"),
+  samplingModelHint: z.string().min(1).optional(),
+  enrichment: z
+    .object({
+      enabled: z.boolean().default(false),
+      provider: z.enum(["git"]).default("git"),
+      maxCommits: z.number().int().min(1).max(20).default(5),
+    })
+    .default({}),
 });
 
 export const ConfigSchema = z.object({
