@@ -130,10 +130,19 @@ describe("Full pipeline integration", () => {
       expect(prompt).toContain("register.ts");
     }
 
-    // Verify correctness prompt checks for the right things
+    // Verify correctness prompt covers expanded practical taxonomy
     const correctnessPrompt = promptMap.get("correctness")!;
-    expect(correctnessPrompt).toContain("Logic errors");
-    expect(correctnessPrompt).toContain("Null / undefined");
+    expect(correctnessPrompt).toContain("Contract and Invariant Correctness");
+    expect(correctnessPrompt).toContain("Data Integrity and Mutation Safety");
+    expect(correctnessPrompt).toContain("Error and Failure Semantics");
+    expect(correctnessPrompt).toContain("Time and Idempotency Semantics");
+    expect(correctnessPrompt).toContain("API and Data-Shape Correctness");
+    expect(correctnessPrompt).toContain("Resource Lifecycle and Cleanup Correctness");
+
+    // Verify correctness anti-noise guardrails
+    expect(correctnessPrompt).toContain("concrete failure scenario");
+    expect(correctnessPrompt).toContain("Do not flag style, naming, formatting, or refactor preferences.");
+    expect(correctnessPrompt).toContain("Untrusted content policy");
 
     // Verify security prompt covers expanded checklist categories
     const securityPrompt = promptMap.get("security-generic")!;
