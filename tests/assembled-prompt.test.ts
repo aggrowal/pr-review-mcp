@@ -154,6 +154,9 @@ describe("buildAssembledPrompt", () => {
       "Allowed status values: blocker | needs_improvement | nudge | looks_good."
     );
     expect(prompt).toContain("#### Track Coverage");
+    expect(prompt).toContain("Executed tracks are exactly the `[run]` entries in Skills");
+    expect(prompt).toContain("#### Contract Compliance");
+    expect(prompt).toContain("CONTRACT_COMPLIANCE: PASS | FAIL");
     expect(prompt).toContain("Verdict rules:");
   });
 
@@ -184,6 +187,12 @@ describe("buildAssembledPrompt", () => {
       "Allowed status values: blocker | needs_improvement | nudge | looks_good."
     );
     expect(prompt).toContain("#### Track Coverage");
+    expect(prompt).toContain("Include every heading shown for that track in `Track execution contract`");
+    expect(prompt).toContain(
+      "passed + failed subpoint ids must exactly cover the subpoints listed in `[subpoints]`"
+    );
+    expect(prompt).toContain("#### Contract Compliance");
+    expect(prompt).toContain("CONTRACT_GAPS:");
     expect(prompt).toContain("all pointers are positive");
   });
 

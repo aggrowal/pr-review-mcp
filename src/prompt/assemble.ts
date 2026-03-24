@@ -283,7 +283,12 @@ Status mapping guidance:
 - looks_good: no issue for this heading
 
 #### Track Coverage
-Include every executed track in the same order as listed in Skills:
+Executed tracks are exactly the \`[run]\` entries in Skills (ignore \`[skip]\` entries).
+Coverage is mandatory and exhaustive:
+- Include every executed track in the same order as listed in Skills.
+- Include every heading shown for that track in \`Track execution contract\`; do not omit or merge headings.
+- For each heading, passed + failed subpoint ids must exactly cover the subpoints listed in \`[subpoints]\`, with no duplicates.
+- If any required track/heading/subpoint is missing, mark contract compliance as FAIL and list gaps.
 - **Track:** <id>
 - **Overall:** blocker | needs_improvement | nudge | looks_good
 - **Headings:**
@@ -291,6 +296,12 @@ Include every executed track in the same order as listed in Skills:
     - Passed subpoints: <ids or "none">
     - Failed subpoints: <ids or "none">
     - Why: <required when failed != none; if none, write "all pointers are positive">
+
+#### Contract Compliance
+- CONTRACT_COMPLIANCE: PASS | FAIL
+- If FAIL, include:
+  - CONTRACT_GAPS: <comma-separated missing track ids and/or heading ids and/or subpoint ids>
+  - CONTRACT_REASON: <why coverage could not be completed>
 
 #### Strengths
 List concrete positives from all tracks.

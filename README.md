@@ -33,9 +33,17 @@ The server now assembles an explicit execution contract for matched tracks so th
   - passed/failed sub-point ids
   - reason when any sub-point fails
   - explicit `"all pointers are positive"` when no sub-point fails
+- **Output-side compliance marker:** The final report instructions require:
+  - `CONTRACT_COMPLIANCE: PASS | FAIL`
+  - if `FAIL`, `CONTRACT_GAPS` and `CONTRACT_REASON` must identify missing track/heading/sub-point coverage
 - **Verdict guidance:** Statuses map to `APPROVE` / `NEEDS_DISCUSSION` / `REQUEST_CHANGES` rules in the final report instructions.
 
 Important architecture note: this MCP server does not receive the model's generated report back. Enforcement is therefore prompt-contract driven, with server logs providing expected-execution telemetry.
+
+### Interpreting omissions
+
+If a review output omits any `[run]` track, heading, or required sub-point accounting, treat it as contract non-compliance.
+Root cause is usually model-side instruction following drift, not prompt assembly failure: the server currently assembles and logs the contract but does not post-validate the model's returned report.
 
 ## Token efficiency strategy
 
