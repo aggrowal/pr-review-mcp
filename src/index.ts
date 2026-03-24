@@ -134,9 +134,9 @@ server.tool(
   }
 );
 
-// ---- Prompt: @pr_review ----
+// ---- Tool: pr_review ----
 
-server.prompt(
+server.tool(
   "pr_review",
   "Run a full PR review on a specified branch. " +
     "Usage: @pr_review branch: feature/my-branch",
@@ -165,13 +165,11 @@ server.prompt(
       endT1({ status: "failed" });
       const detail = guard.detail ? `\n\nDetail: ${guard.detail}` : "";
       return {
-        messages: [
+        isError: true,
+        content: [
           {
-            role: "user" as const,
-            content: {
-              type: "text" as const,
-              text: `PR Review blocked\n\nReason: ${guard.reason}\n\nWhat to do: ${guard.hint}${detail}`,
-            },
+            type: "text" as const,
+            text: `PR Review blocked\n\nReason: ${guard.reason}\n\nWhat to do: ${guard.hint}${detail}`,
           },
         ],
       };
@@ -186,13 +184,11 @@ server.prompt(
       endT2({ status: "failed" });
       const detail = branchResult.detail ? `\n\nDetail: ${branchResult.detail}` : "";
       return {
-        messages: [
+        isError: true,
+        content: [
           {
-            role: "user" as const,
-            content: {
-              type: "text" as const,
-              text: `Branch resolution failed\n\nReason: ${branchResult.reason}\n\nWhat to do: ${branchResult.hint}${detail}`,
-            },
+            type: "text" as const,
+            text: `Branch resolution failed\n\nReason: ${branchResult.reason}\n\nWhat to do: ${branchResult.hint}${detail}`,
           },
         ],
       };
@@ -207,13 +203,11 @@ server.prompt(
       endT3({ status: "failed" });
       const detail = diffResult.detail ? `\n\nDetail: ${diffResult.detail}` : "";
       return {
-        messages: [
+        isError: true,
+        content: [
           {
-            role: "user" as const,
-            content: {
-              type: "text" as const,
-              text: `Diff extraction failed\n\nReason: ${diffResult.reason}\n\nWhat to do: ${diffResult.hint}${detail}`,
-            },
+            type: "text" as const,
+            text: `Diff extraction failed\n\nReason: ${diffResult.reason}\n\nWhat to do: ${diffResult.hint}${detail}`,
           },
         ],
       };
@@ -245,13 +239,10 @@ server.prompt(
     logger.info("pr_review: complete");
 
     return {
-      messages: [
+      content: [
         {
-          role: "user" as const,
-          content: {
-            type: "text" as const,
-            text: assembledPrompt,
-          },
+          type: "text" as const,
+          text: assembledPrompt,
         },
       ],
     };
