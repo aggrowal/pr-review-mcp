@@ -1,70 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
-  executeReview,
   ReviewExecutionError,
-  type SamplingExecutor,
-  type SamplingExecutorRequest,
+  toReviewExecutionError,
+  validateDraftForExecution,
+  validateReviewOutput,
 } from "../src/review/execute-review.js";
-import {
-  LlmProviderError,
-  type LlmProvider,
-  type LlmRequest,
-  type LlmResponse,
-} from "../src/llm/provider.js";
-import { createNullLogger } from "../src/logger.js";
 import type { TrackExecutionContract } from "../src/prompt/assemble.js";
-
-class MockProvider implements LlmProvider {
-  readonly id = "openai" as const;
-  readonly model = "mock-model";
-  readonly calls: LlmRequest[] = [];
-  private queue: Array<string | Error>;
-
-  constructor(queue: Array<string | Error>) {
-    this.queue = [...queue];
-  }
-
-  async generate(request: LlmRequest): Promise<LlmResponse> {
-    this.calls.push(request);
-    const next = this.queue.shift();
-    if (next instanceof Error) {
-      throw next;
-    }
-    if (typeof next !== "string") {
-      throw new Error("MockProvider queue exhausted");
-    }
-    return {
-      provider: this.id,
-      model: this.model,
-      text: next,
-    };
-  }
-}
-
-class MockSamplingExecutor implements SamplingExecutor {
-  readonly calls: SamplingExecutorRequest[] = [];
-  private queue: Array<string | Error>;
-
-  constructor(queue: Array<string | Error>) {
-    this.queue = [...queue];
-  }
-
-  async generate(request: SamplingExecutorRequest) {
-    this.calls.push(request);
-    const next = this.queue.shift();
-    if (next instanceof Error) {
-      throw next;
-    }
-    if (typeof next !== "string") {
-      throw new Error("MockSamplingExecutor queue exhausted");
-    }
-    return {
-      provider: "mcp_client_sampling",
-      model: "host-model",
-      text: next,
-    };
-  }
-}
 
 function makeTrackContracts(): TrackExecutionContract[] {
   return [
@@ -129,168 +70,47 @@ function makeValidReportJson(): string {
   });
 }
 
-describe("executeReview", () => {
-  it("returns validated report on first valid output", async () => {
-    const provider = new MockProvider([makeValidReportJson()]);
-    const result = await executeReview({
-      assembledPrompt: "Assembled prompt body",
+describe("keyless review validation", () => {
+  it("validates a correct draft and returns report", () => {
+    const outcome = validateDraftForExecution({
+      assembledPrompt: "Prompt body",
+      draftReport: makeValidReportJson(),
       trackContracts: makeTrackContracts(),
-      logger: createNullLogger(),
-      provider,
-      maxRetries: 1,
     });
 
-    expect(result.attempts).toBe(1);
-    expect(result.report.verdict).toBe("NEEDS_DISCUSSION");
-    expect(provider.calls).toHaveLength(1);
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) {
+      expect(outcome.report.verdict).toBe("NEEDS_DISCUSSION");
+    }
   });
 
-  it("retries once when first output is invalid", async () => {
-    const provider = new MockProvider(["not-json", makeValidReportJson()]);
-
-    const result = await executeReview({
-      assembledPrompt: "Assembled prompt body",
+  it("returns actionable correction prompt on invalid draft", () => {
+    const outcome = validateDraftForExecution({
+      assembledPrompt: "Prompt body",
+      draftReport: "not-json",
       trackContracts: makeTrackContracts(),
-      logger: createNullLogger(),
-      provider,
-      maxRetries: 1,
     });
 
-    expect(result.attempts).toBe(2);
-    expect(provider.calls).toHaveLength(2);
-    expect(provider.calls[1].prompt).toContain("## Output correction required");
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect(outcome.issues[0]).toContain("JSON object");
+      expect(outcome.correctionPrompt).toContain("## Output correction required");
+    }
   });
 
-  it("throws when output is still invalid after retries", async () => {
-    const provider = new MockProvider(["still not json"]);
-
-    await expect(
-      executeReview({
-        assembledPrompt: "Assembled prompt body",
-        trackContracts: makeTrackContracts(),
-        logger: createNullLogger(),
-        provider,
-        maxRetries: 0,
-      })
-    ).rejects.toMatchObject({
-      name: "ReviewExecutionError",
-      code: "invalid_output",
-    } as Partial<ReviewExecutionError>);
+  it("accepts fenced JSON output in validation helper", () => {
+    const raw = ["```json", makeValidReportJson(), "```"].join("\n");
+    const validation = validateReviewOutput(raw, makeTrackContracts());
+    expect(validation.ok).toBe(true);
   });
 
-  it("retries on retryable provider errors", async () => {
-    const provider = new MockProvider([
-      new LlmProviderError("timeout", "timed out", { retryable: true }),
-      makeValidReportJson(),
-    ]);
-
-    const result = await executeReview({
-      assembledPrompt: "Assembled prompt body",
-      trackContracts: makeTrackContracts(),
-      logger: createNullLogger(),
-      provider,
-      maxRetries: 1,
-    });
-
-    expect(result.attempts).toBe(2);
-    expect(provider.calls).toHaveLength(2);
-  });
-
-  it("uses client sampling when executionMode is client_sampling", async () => {
-    const samplingExecutor = new MockSamplingExecutor([makeValidReportJson()]);
-    const result = await executeReview({
-      assembledPrompt: "Assembled prompt body",
-      trackContracts: makeTrackContracts(),
-      logger: createNullLogger(),
-      executionMode: "client_sampling",
-      samplingExecutor,
-      providerConfig: {
-        maxOutputTokens: 2048,
-        temperature: 0,
-      },
-    });
-
-    expect(result.attempts).toBe(1);
-    expect(result.provider).toBe("mcp_client_sampling");
-    expect(samplingExecutor.calls).toHaveLength(1);
-    expect(samplingExecutor.calls[0].maxTokens).toBe(2048);
-  });
-
-  it("falls back to provider in auto mode when sampling is unavailable", async () => {
-    const samplingExecutor = new MockSamplingExecutor([
-      new Error("Method not found: sampling/createMessage"),
-    ]);
-    const provider = new MockProvider([makeValidReportJson()]);
-
-    const result = await executeReview({
-      assembledPrompt: "Assembled prompt body",
-      trackContracts: makeTrackContracts(),
-      logger: createNullLogger(),
-      executionMode: "auto",
-      samplingExecutor,
-      provider,
-      providerConfig: {
-        provider: "openai",
-      },
-    });
-
-    expect(result.attempts).toBe(1);
-    expect(result.provider).toBe("openai");
-    expect(samplingExecutor.calls).toHaveLength(1);
-    expect(provider.calls).toHaveLength(1);
-  });
-
-  it("returns actionable sampling_unavailable guidance when auto fallback lacks provider credentials", async () => {
-    const samplingExecutor = new MockSamplingExecutor([
-      new Error("Method not found: sampling/createMessage"),
-    ]);
-    const originalAnthropicKey = process.env.ANTHROPIC_API_KEY;
-    const originalOpenAiKey = process.env.OPENAI_API_KEY;
-    const originalProvider = process.env.PR_REVIEW_PROVIDER;
-
-    delete process.env.ANTHROPIC_API_KEY;
-    delete process.env.OPENAI_API_KEY;
-    delete process.env.PR_REVIEW_PROVIDER;
-
-    try {
-      await executeReview({
-        assembledPrompt: "Assembled prompt body",
-        trackContracts: makeTrackContracts(),
-        logger: createNullLogger(),
-        executionMode: "auto",
-        samplingExecutor,
-        providerConfig: {
-          provider: "anthropic",
-        },
-      });
-      throw new Error("Expected executeReview to throw");
-    } catch (error) {
+  it("converts validation failure to ReviewExecutionError", () => {
+    const validation = validateReviewOutput("{}", makeTrackContracts());
+    expect(validation.ok).toBe(false);
+    if (!validation.ok) {
+      const error = toReviewExecutionError(validation);
       expect(error).toBeInstanceOf(ReviewExecutionError);
-      if (error instanceof ReviewExecutionError) {
-        expect(error.code).toBe("sampling_unavailable");
-        expect(error.retryable).toBe(false);
-        expect(error.detail).toContain("Sampling failure detail");
-        expect(error.detail).toContain("ANTHROPIC_API_KEY");
-        expect(error.detail).toContain('executionMode at "client_sampling"');
-      }
-    } finally {
-      if (originalAnthropicKey === undefined) {
-        delete process.env.ANTHROPIC_API_KEY;
-      } else {
-        process.env.ANTHROPIC_API_KEY = originalAnthropicKey;
-      }
-
-      if (originalOpenAiKey === undefined) {
-        delete process.env.OPENAI_API_KEY;
-      } else {
-        process.env.OPENAI_API_KEY = originalOpenAiKey;
-      }
-
-      if (originalProvider === undefined) {
-        delete process.env.PR_REVIEW_PROVIDER;
-      } else {
-        process.env.PR_REVIEW_PROVIDER = originalProvider;
-      }
+      expect(error?.code).toBe("invalid_output");
     }
   });
 });

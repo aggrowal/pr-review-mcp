@@ -33,9 +33,7 @@ npx -y aggrowal-pr-review-mcp
 }
 ```
 
-Default runtime is `client_sampling` (chat-host model path), so provider API keys are optional.
-If you want provider fallback (`auto`) or direct provider mode (`provider_api`), set
-`ANTHROPIC_API_KEY` or `OPENAI_API_KEY` in MCP `env` (and optionally `PR_REVIEW_PROVIDER=openai`).
+This server is keyless by default. No Anthropic/OpenAI keys are required.
 
 3. Configure project once:
 
@@ -53,7 +51,15 @@ configure_project
 @pr_review branch: feature/my-branch format: markdown
 ```
 
-The server emits progress logs during execution (`T1`, `T2`, `T3`, detection, assembly, execution) and returns machine-readable JSON by default (`format: json`) or readable markdown (`format: markdown`).
+`pr_review` now uses a strict staged loop:
+
+- Stage `prepare`: server returns `sessionId`, assembled prompt, and coverage contract.
+- Stage `validate`: host sends a draft report back; server validates schema + contract.
+- Stage `repair` (if needed): server returns exact gaps and a correction prompt.
+- Stage `final`: server returns validated review JSON (and optional markdown summary).
+
+Most IDE agents can chain this automatically after the initial `@pr_review branch: ...` call.  
+If your host does not auto-chain, call `pr_review` again with `sessionId` + `draftReport`.
 
 ## Review contract enforcement
 
@@ -76,7 +82,7 @@ Current strategy:
 - Inject shared changed-files payload once for all tracks.
 - Remove repeated per-track prompt boilerplate while preserving checklist semantics.
 - Emit prompt telemetry (`static`, `payload`, `tracks`, `total`) for visibility.
-- Retry only when output is invalid or execution fails retryably.
+- Retry through explicit staged validation when output fails schema/contract checks.
 
 ## Skill prompt format contract (must keep)
 

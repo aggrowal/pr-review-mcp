@@ -1,42 +1,92 @@
 import { z } from "zod";
-import type { LlmUsage } from "../llm/provider.js";
 import type { ReviewReport } from "../review-contract/types.js";
-import type { ReviewExecutionError } from "./execute-review.js";
 
 export type PrReviewToolErrorCode =
   | "project_guard_failed"
   | "branch_resolution_failed"
   | "diff_extraction_failed"
   | "budget_exceeded"
-  | "provider_error"
   | "invalid_output"
   | "schema_invalid"
   | "contract_invalid"
-  | "sampling_unavailable"
-  | "sampling_failed"
+  | "verdict_invalid"
+  | "session_not_found"
+  | "session_expired"
+  | "validate_request_invalid"
+  | "validation_attempts_exhausted"
   | "internal_error";
 
-const UsageSchema = z
+export interface PrReviewToolError {
+  code: PrReviewToolErrorCode;
+  message: string;
+  detail?: string;
+  retryable?: boolean;
+}
+
+const SessionSchema = z
   .object({
-    inputTokens: z.number().int().nonnegative().optional(),
-    outputTokens: z.number().int().nonnegative().optional(),
-    totalTokens: z.number().int().nonnegative().optional(),
+    sessionId: z.string().min(1),
+    attempt: z.number().int().nonnegative(),
+    maxAttempts: z.number().int().positive(),
+    expiresAt: z.string().datetime(),
   })
   .strict();
 
-export const PrReviewSuccessSchema = z
+const ValidationIssueSchema = z.array(z.string().min(1));
+
+export const PrReviewPrepareSchema = z
   .object({
     ok: z.literal(true),
+    stage: z.literal("prepare"),
+    session: SessionSchema,
+    payload: z
+      .object({
+        prompt: z.string().min(1),
+        trackContracts: z.array(z.unknown()),
+      })
+      .strict(),
+    nextAction: z
+      .object({
+        type: z.literal("generate_and_validate"),
+        instructions: z.string().min(1),
+      })
+      .strict(),
+  })
+  .strict();
+
+export const PrReviewRepairSchema = z
+  .object({
+    ok: z.literal(true),
+    stage: z.literal("repair"),
+    session: SessionSchema,
+    validationIssues: ValidationIssueSchema,
+    payload: z
+      .object({
+        correctionPrompt: z.string().min(1),
+      })
+      .strict(),
+    nextAction: z
+      .object({
+        type: z.literal("regenerate_and_validate"),
+        instructions: z.string().min(1),
+      })
+      .strict(),
+  })
+  .strict();
+
+export const PrReviewFinalSchema = z
+  .object({
+    ok: z.literal(true),
+    stage: z.literal("final"),
     review: z.unknown(),
     meta: z
       .object({
-        provider: z.string().min(1),
-        model: z.string().min(1),
-        attempts: z.number().int().positive(),
-        latencyMs: z.number().int().nonnegative(),
-        usage: UsageSchema.optional(),
+        sessionId: z.string().min(1),
+        validationAttempts: z.number().int().positive(),
+        model: z.string().min(1).optional(),
       })
       .strict(),
+    markdown: z.string().optional(),
   })
   .strict();
 
@@ -54,24 +104,32 @@ export const PrReviewErrorSchema = z
   })
   .strict();
 
-export function buildPrReviewSuccessJson(params: {
-  review: ReviewReport;
-  provider: string;
-  model: string;
-  attempts: number;
-  latencyMs: number;
-  usage?: LlmUsage;
+export function buildPrReviewPrepareJson(params: {
+  sessionId: string;
+  attempt: number;
+  maxAttempts: number;
+  expiresAt: string;
+  prompt: string;
+  trackContracts: unknown[];
 }): string {
   return JSON.stringify(
     {
       ok: true,
-      review: params.review,
-      meta: {
-        provider: params.provider,
-        model: params.model,
-        attempts: params.attempts,
-        latencyMs: params.latencyMs,
-        usage: params.usage,
+      stage: "prepare",
+      session: {
+        sessionId: params.sessionId,
+        attempt: params.attempt,
+        maxAttempts: params.maxAttempts,
+        expiresAt: params.expiresAt,
+      },
+      payload: {
+        prompt: params.prompt,
+        trackContracts: params.trackContracts,
+      },
+      nextAction: {
+        type: "generate_and_validate",
+        instructions:
+          "Generate one JSON report that follows payload.prompt exactly, then call pr_review again with sessionId and draftReport.",
       },
     },
     null,
@@ -79,7 +137,64 @@ export function buildPrReviewSuccessJson(params: {
   );
 }
 
-export function buildPrReviewErrorJson(error: ReviewExecutionError): string {
+export function buildPrReviewRepairJson(params: {
+  sessionId: string;
+  attempt: number;
+  maxAttempts: number;
+  expiresAt: string;
+  validationIssues: string[];
+  correctionPrompt: string;
+}): string {
+  return JSON.stringify(
+    {
+      ok: true,
+      stage: "repair",
+      session: {
+        sessionId: params.sessionId,
+        attempt: params.attempt,
+        maxAttempts: params.maxAttempts,
+        expiresAt: params.expiresAt,
+      },
+      validationIssues: params.validationIssues,
+      payload: {
+        correctionPrompt: params.correctionPrompt,
+      },
+      nextAction: {
+        type: "regenerate_and_validate",
+        instructions:
+          "Regenerate the full JSON report using payload.correctionPrompt, then call pr_review again with the same sessionId and the new draftReport.",
+      },
+    },
+    null,
+    2
+  );
+}
+
+export function buildPrReviewFinalJson(params: {
+  review: ReviewReport;
+  sessionId: string;
+  validationAttempts: number;
+  model?: string;
+  markdown?: string;
+}): string {
+  return JSON.stringify(
+    {
+      ok: true,
+      stage: "final",
+      review: params.review,
+      meta: {
+        sessionId: params.sessionId,
+        validationAttempts: params.validationAttempts,
+        model: params.model,
+      },
+      markdown: params.markdown,
+    },
+    null,
+    2
+  );
+}
+
+export function buildPrReviewErrorJson(error: PrReviewToolError): string {
   return buildPrReviewErrorJsonFromFields({
     code: error.code,
     message: error.message,

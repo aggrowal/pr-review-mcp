@@ -1,10 +1,6 @@
 #!/usr/bin/env node
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import type {
-  CreateMessageResult,
-  CreateMessageResultWithTools,
-} from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
 import {
@@ -25,17 +21,14 @@ import {
 import { SKILL_REGISTRY } from "./skills/registry.js";
 import { buildAssembledPromptWithTelemetry } from "./prompt/assemble.js";
 import {
-  executeReview,
-  ReviewExecutionError,
-  type SamplingExecutor,
-  type SamplingExecutorRequest,
-} from "./review/execute-review.js";
-import {
-  buildPrReviewErrorJson,
+  buildPrReviewFinalJson,
   buildPrReviewErrorJsonFromFields,
-  buildPrReviewSuccessJson,
+  buildPrReviewPrepareJson,
+  buildPrReviewRepairJson,
 } from "./review/tool-result.js";
 import { formatReviewAsMarkdown } from "./review/format-markdown.js";
+import { buildRepairPrompt, validateReviewDraft } from "./review/validate-report.js";
+import { ReviewSessionStore, isoTimestamp } from "./review/session-store.js";
 import { getServerVersion } from "./version.js";
 
 // ---- Logger initialization ----
@@ -58,7 +51,7 @@ const server = new McpServer(
   { name: "aggrowal-pr-review-mcp", version: serverVersion },
   { capabilities: { logging: {} } },
 );
-const samplingExecutor = createMcpSamplingExecutor();
+const sessionStore = new ReviewSessionStore();
 
 // ---- Tool: configure_project ----
 
@@ -150,19 +143,19 @@ server.tool(
 
 server.tool(
   "pr_review",
-  "Run a full PR review on a specified branch. " +
-    "Usage: @pr_review branch: feature/my-branch [reviewInstructions: focus areas]",
+  "Run a staged keyless PR review with strict contract validation.",
   {
     branch: z
       .string()
       .optional()
-      .describe("Branch to review. Must be specified explicitly."),
+      .describe(
+        "Prepare stage: branch to review. Must be specified explicitly."
+      ),
     cwd: z
       .string()
       .optional()
       .describe(
-        "Working directory to run from. Defaults to process.cwd(). " +
-          "Most IDEs inject this automatically."
+        "Prepare stage: working directory. Defaults to process.cwd(). Most IDEs inject this automatically."
       ),
     reviewInstructions: z
       .string()
@@ -170,278 +163,398 @@ server.tool(
       .max(2000)
       .optional()
       .describe(
-        "Optional trusted reviewer focus/instructions to include in prompt assembly (max 2000 chars)."
+        "Prepare stage: trusted reviewer focus to include in prompt assembly (max 2000 chars)."
       ),
     format: z
       .enum(["json", "markdown"])
-      .default("json")
+      .optional()
       .describe(
-        "Output format. 'json' returns machine-readable JSON. 'markdown' returns a human-readable summary."
+        "Requested final output format when validation reaches final stage."
       ),
+    sessionId: z
+      .string()
+      .optional()
+      .describe(
+        "Validate stage: session ID returned by pr_review prepare/repair stage."
+      ),
+    draftReport: z
+      .unknown()
+      .optional()
+      .describe(
+        "Validate stage: draft JSON report from the host model (object or JSON string)."
+      ),
+    model: z
+      .string()
+      .optional()
+      .describe("Validate stage: optional host model identifier used for draft generation."),
   },
-  async ({ branch, cwd: cwdArg, reviewInstructions, format }) => {
-    const cwd = cwdArg ?? process.cwd();
-    const trustedReviewInstructions =
-      reviewInstructions && reviewInstructions.length > 0
-        ? reviewInstructions
-        : undefined;
-    logger.info(`pr_review: starting`, { branch, cwd });
-
-    // T1: Project guard
-    const endT1 = logger.startStep("T1: Project guard");
-    const guard = runProjectGuard(cwd, logger);
-    if (!guard.ok) {
-      logger.error(`T1: Project guard failed -- ${guard.reason}`, { hint: guard.hint, detail: guard.detail });
-      endT1({ status: "failed" });
-      return {
-        isError: true,
-        content: [
-          {
-            type: "text" as const,
-            text: buildPrReviewErrorJsonFromFields({
-              code: "project_guard_failed",
-              message: guard.reason,
-              detail: [guard.hint, guard.detail].filter(Boolean).join("\n\n"),
-              retryable: false,
-            }),
-          },
-        ],
-      };
+  async ({
+    branch,
+    cwd: cwdArg,
+    reviewInstructions,
+    format,
+    sessionId,
+    draftReport,
+    model,
+  }) => {
+    if (sessionId || draftReport !== undefined) {
+      return handleValidateStage({
+        sessionId,
+        draftReport,
+        format,
+        model,
+      });
     }
-    endT1({ project: guard.projectName, mainBranch: guard.mainBranch });
 
-    // T2: Branch resolver
-    const endT2 = logger.startStep("T2: Branch resolver");
-    const branchResult = runBranchResolver(guard, branch, logger);
-    if (!branchResult.ok) {
-      logger.error(`T2: Branch resolver failed -- ${branchResult.reason}`, { hint: branchResult.hint, detail: branchResult.detail });
-      endT2({ status: "failed" });
-      return {
-        isError: true,
-        content: [
-          {
-            type: "text" as const,
-            text: buildPrReviewErrorJsonFromFields({
-              code: "branch_resolution_failed",
-              message: branchResult.reason,
-              detail: [branchResult.hint, branchResult.detail]
-                .filter(Boolean)
-                .join("\n\n"),
-              retryable: false,
-            }),
-          },
-        ],
-      };
-    }
-    endT2({ head: branchResult.context.headBranch, base: branchResult.context.baseBranch });
-
-    // T3: Diff extractor
-    const endT3 = logger.startStep("T3: Diff extractor");
-    const diffResult = runDiffExtractor(branchResult.context, logger, {
-      enrichment: config.reviewRuntime.enrichment,
+    return handlePrepareStage({
+      branch,
+      cwd: cwdArg,
+      reviewInstructions,
+      format,
     });
-    if (!diffResult.ok) {
-      logger.error(`T3: Diff extractor failed -- ${diffResult.reason}`, { hint: diffResult.hint, detail: diffResult.detail });
-      endT3({ status: "failed" });
-      return {
-        isError: true,
-        content: [
-          {
-            type: "text" as const,
-            text: buildPrReviewErrorJsonFromFields({
-              code: "diff_extraction_failed",
-              message: diffResult.reason,
-              detail: [diffResult.hint, diffResult.detail]
-                .filter(Boolean)
-                .join("\n\n"),
-              retryable: false,
-            }),
-          },
-        ],
-      };
-    }
-    endT3({ files: diffResult.diff.files.length, additions: diffResult.diff.totalAdditions, deletions: diffResult.diff.totalDeletions });
-
-    // Budget check: enforce file/line limits, estimate token budget
-    const endBudget = logger.startStep("Budget check");
-    const budgetResult = applyTokenBudget(
-      diffResult.diff,
-      SKILL_REGISTRY.length,
-      config.reviewRuntime.tokenBudget,
-      logger
-    );
-    if (!budgetResult.ok) {
-      logger.error(`Budget check failed -- ${budgetResult.reason}`, { hint: budgetResult.hint });
-      endBudget({ status: "failed" });
-      return {
-        isError: true,
-        content: [
-          {
-            type: "text" as const,
-            text: buildPrReviewErrorJsonFromFields({
-              code: "budget_exceeded",
-              message: budgetResult.reason,
-              detail: budgetResult.hint,
-              retryable: false,
-            }),
-          },
-        ],
-      };
-    }
-    if (budgetResult.truncated) {
-      logger.warn("Budget: payload was truncated to fit token budget", {
-        droppedFiles: budgetResult.droppedFiles.length,
-        droppedFullContent: budgetResult.droppedFullContent.length,
-        truncatedDiffs: budgetResult.truncatedDiffs.length,
-      });
-    }
-    endBudget({ truncated: budgetResult.truncated, files: budgetResult.diff.files.length });
-
-    const diff = budgetResult.diff;
-
-    // Orchestrator: detect context, filter skills
-    const endDetect = logger.startStep("Orchestrator: detect + filter");
-    const detectedCtx = detectProjectContext(diff, logger);
-    const { matched, skipped } = filterSkills(
-      detectedCtx,
-      SKILL_REGISTRY.map((s) => s.metadata),
-      logger
-    );
-    logger.info(
-      `Skills selected: ${matched.map((skill) => skill.id).join(", ") || "none"}`
-    );
-    if (skipped.length > 0) {
-      logger.info(
-        `Skills skipped: ${skipped
-          .map((entry) => `${entry.skill.id} (${entry.reason})`)
-          .join("; ")}`
-      );
-    }
-    endDetect({ language: detectedCtx.language, frameworks: detectedCtx.framework, patterns: detectedCtx.patterns, matched: matched.length, skipped: skipped.length });
-
-    // Assembly
-    const endAssembly = logger.startStep("Assembly");
-    const assembled = buildAssembledPromptWithTelemetry(
-      diff,
-      detectedCtx,
-      matched,
-      skipped,
-      { reviewInstructions: trustedReviewInstructions }
-    );
-    const assembledPrompt = assembled.prompt;
-    const telemetry = assembled.telemetry;
-    const contractPreview = assembled.trackContracts
-      .map((track) =>
-        `${track.trackId}[${track.headings
-          .map((heading) => `${heading.id}:${heading.subpoints.length}`)
-          .join(",")}]`
-      )
-      .join(" | ");
-
-    logger.info(
-      `Assembly coverage contract: tracks=${telemetry.matchedTrackCount}, headings=${telemetry.headingCount}, subpoints=${telemetry.subpointCount}`
-    );
-    logger.info(
-      `Assembly prompt size: total=${telemetry.totalChars}, static=${telemetry.staticChars}, payload=${telemetry.payloadChars}, tracks=${telemetry.trackChars}`
-    );
-    logger.debug("Assembly contract details", { contract: contractPreview });
-
-    endAssembly({
-      skills: matched.length,
-      promptChars: telemetry.totalChars,
-      staticChars: telemetry.staticChars,
-      payloadChars: telemetry.payloadChars,
-      trackChars: telemetry.trackChars,
-      headings: telemetry.headingCount,
-      subpoints: telemetry.subpointCount,
-    });
-
-    // Execute review
-    const endExecution = logger.startStep("Execution");
-    try {
-      const execution = await executeReview({
-        assembledPrompt,
-        trackContracts: assembled.trackContracts,
-        logger,
-        providerConfig: config.reviewRuntime,
-        maxRetries: config.reviewRuntime.maxRetries,
-        executionMode: config.reviewRuntime.executionMode,
-        samplingExecutor,
-        samplingIncludeContext: config.reviewRuntime.samplingIncludeContext,
-        samplingModelHint: config.reviewRuntime.samplingModelHint,
-      });
-
-      logger.execution("complete", {
-        provider: execution.provider,
-        model: execution.model,
-        attempts: execution.attempts,
-        latencyMs: execution.latencyMs,
-        inputTokens: execution.usage?.inputTokens,
-        outputTokens: execution.usage?.outputTokens,
-        totalTokens: execution.usage?.totalTokens,
-      });
-      endExecution({
-        provider: execution.provider,
-        model: execution.model,
-        attempts: execution.attempts,
-        latencyMs: execution.latencyMs,
-      });
-
-      logger.info("pr_review: complete");
-      const resultPayload = format === "markdown"
-        ? formatReviewAsMarkdown({
-            review: execution.report,
-            provider: execution.provider,
-            model: execution.model,
-            attempts: execution.attempts,
-            latencyMs: execution.latencyMs,
-            usage: execution.usage,
-          })
-        : buildPrReviewSuccessJson({
-            review: execution.report,
-            provider: execution.provider,
-            model: execution.model,
-            attempts: execution.attempts,
-            latencyMs: execution.latencyMs,
-            usage: execution.usage,
-          });
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: resultPayload,
-          },
-        ],
-      };
-    } catch (error) {
-      endExecution({ status: "failed" });
-
-      const executionError =
-        error instanceof ReviewExecutionError
-          ? error
-          : new ReviewExecutionError(
-              "provider_error",
-              "Unexpected execution failure.",
-              { detail: String(error) }
-            );
-
-      logger.error("Review execution failed", {
-        code: executionError.code,
-        detail: executionError.detail,
-      });
-
-      return {
-        isError: true,
-        content: [
-          {
-            type: "text" as const,
-            text: buildPrReviewErrorJson(executionError),
-          },
-        ],
-      };
-    }
   }
 );
+
+interface PrepareStageInput {
+  branch?: string;
+  cwd?: string;
+  reviewInstructions?: string;
+  format?: "json" | "markdown";
+}
+
+interface ValidateStageInput {
+  sessionId?: string;
+  draftReport?: unknown;
+  format?: "json" | "markdown";
+  model?: string;
+}
+
+async function handlePrepareStage(input: PrepareStageInput) {
+  const cwd = input.cwd ?? process.cwd();
+  const trustedReviewInstructions =
+    input.reviewInstructions && input.reviewInstructions.length > 0
+      ? input.reviewInstructions
+      : undefined;
+  const outputFormat = input.format ?? "json";
+
+  logger.info("pr_review: prepare stage starting", { branch: input.branch, cwd });
+
+  // T1: Project guard
+  const endT1 = logger.startStep("T1: Project guard");
+  const guard = runProjectGuard(cwd, logger);
+  if (!guard.ok) {
+    logger.error(`T1: Project guard failed -- ${guard.reason}`, {
+      hint: guard.hint,
+      detail: guard.detail,
+    });
+    endT1({ status: "failed" });
+    return makeToolError(
+      "project_guard_failed",
+      guard.reason,
+      [guard.hint, guard.detail].filter(Boolean).join("\n\n")
+    );
+  }
+  endT1({ project: guard.projectName, mainBranch: guard.mainBranch });
+
+  // T2: Branch resolver
+  const endT2 = logger.startStep("T2: Branch resolver");
+  const branchResult = runBranchResolver(guard, input.branch, logger);
+  if (!branchResult.ok) {
+    logger.error(`T2: Branch resolver failed -- ${branchResult.reason}`, {
+      hint: branchResult.hint,
+      detail: branchResult.detail,
+    });
+    endT2({ status: "failed" });
+    return makeToolError(
+      "branch_resolution_failed",
+      branchResult.reason,
+      [branchResult.hint, branchResult.detail].filter(Boolean).join("\n\n")
+    );
+  }
+  endT2({
+    head: branchResult.context.headBranch,
+    base: branchResult.context.baseBranch,
+  });
+
+  // T3: Diff extractor
+  const endT3 = logger.startStep("T3: Diff extractor");
+  const diffResult = runDiffExtractor(branchResult.context, logger, {
+    enrichment: config.reviewRuntime.enrichment,
+  });
+  if (!diffResult.ok) {
+    logger.error(`T3: Diff extractor failed -- ${diffResult.reason}`, {
+      hint: diffResult.hint,
+      detail: diffResult.detail,
+    });
+    endT3({ status: "failed" });
+    return makeToolError(
+      "diff_extraction_failed",
+      diffResult.reason,
+      [diffResult.hint, diffResult.detail].filter(Boolean).join("\n\n")
+    );
+  }
+  endT3({
+    files: diffResult.diff.files.length,
+    additions: diffResult.diff.totalAdditions,
+    deletions: diffResult.diff.totalDeletions,
+  });
+
+  // Budget check: enforce file/line limits, estimate token budget
+  const endBudget = logger.startStep("Budget check");
+  const budgetResult = applyTokenBudget(
+    diffResult.diff,
+    SKILL_REGISTRY.length,
+    config.reviewRuntime.tokenBudget,
+    logger
+  );
+  if (!budgetResult.ok) {
+    logger.error(`Budget check failed -- ${budgetResult.reason}`, {
+      hint: budgetResult.hint,
+    });
+    endBudget({ status: "failed" });
+    return makeToolError(
+      "budget_exceeded",
+      budgetResult.reason,
+      budgetResult.hint
+    );
+  }
+  if (budgetResult.truncated) {
+    logger.warn("Budget: payload was truncated to fit token budget", {
+      droppedFiles: budgetResult.droppedFiles.length,
+      droppedFullContent: budgetResult.droppedFullContent.length,
+      truncatedDiffs: budgetResult.truncatedDiffs.length,
+    });
+  }
+  endBudget({
+    truncated: budgetResult.truncated,
+    files: budgetResult.diff.files.length,
+  });
+
+  const diff = budgetResult.diff;
+
+  // Orchestrator: detect context, filter skills
+  const endDetect = logger.startStep("Orchestrator: detect + filter");
+  const detectedCtx = detectProjectContext(diff, logger);
+  const { matched, skipped } = filterSkills(
+    detectedCtx,
+    SKILL_REGISTRY.map((s) => s.metadata),
+    logger
+  );
+  logger.info(
+    `Skills selected: ${matched.map((skill) => skill.id).join(", ") || "none"}`
+  );
+  if (skipped.length > 0) {
+    logger.info(
+      `Skills skipped: ${skipped
+        .map((entry) => `${entry.skill.id} (${entry.reason})`)
+        .join("; ")}`
+    );
+  }
+  endDetect({
+    language: detectedCtx.language,
+    frameworks: detectedCtx.framework,
+    patterns: detectedCtx.patterns,
+    matched: matched.length,
+    skipped: skipped.length,
+  });
+
+  // Assembly
+  const endAssembly = logger.startStep("Assembly");
+  const assembled = buildAssembledPromptWithTelemetry(
+    diff,
+    detectedCtx,
+    matched,
+    skipped,
+    { reviewInstructions: trustedReviewInstructions }
+  );
+  const telemetry = assembled.telemetry;
+  const contractPreview = assembled.trackContracts
+    .map((track) =>
+      `${track.trackId}[${track.headings
+        .map((heading) => `${heading.id}:${heading.subpoints.length}`)
+        .join(",")}]`
+    )
+    .join(" | ");
+
+  logger.info(
+    `Assembly coverage contract: tracks=${telemetry.matchedTrackCount}, headings=${telemetry.headingCount}, subpoints=${telemetry.subpointCount}`
+  );
+  logger.info(
+    `Assembly prompt size: total=${telemetry.totalChars}, static=${telemetry.staticChars}, payload=${telemetry.payloadChars}, tracks=${telemetry.trackChars}`
+  );
+  logger.debug("Assembly contract details", { contract: contractPreview });
+
+  endAssembly({
+    skills: matched.length,
+    promptChars: telemetry.totalChars,
+    staticChars: telemetry.staticChars,
+    payloadChars: telemetry.payloadChars,
+    trackChars: telemetry.trackChars,
+    headings: telemetry.headingCount,
+    subpoints: telemetry.subpointCount,
+  });
+
+  const session = sessionStore.createSession({
+    assembledPrompt: assembled.prompt,
+    trackContracts: assembled.trackContracts,
+    ttlMinutes: config.reviewRuntime.sessionTtlMinutes,
+    maxAttempts: config.reviewRuntime.maxValidationAttempts,
+    outputFormat,
+  });
+
+  logger.info("pr_review: prepare stage complete", {
+    sessionId: session.sessionId,
+    maxAttempts: session.maxAttempts,
+    expiresAt: isoTimestamp(session.expiresAtMs),
+    format: session.outputFormat,
+  });
+
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text: buildPrReviewPrepareJson({
+          sessionId: session.sessionId,
+          attempt: session.attempt,
+          maxAttempts: session.maxAttempts,
+          expiresAt: isoTimestamp(session.expiresAtMs),
+          prompt: session.assembledPrompt,
+          trackContracts: session.trackContracts,
+        }),
+      },
+    ],
+  };
+}
+
+async function handleValidateStage(input: ValidateStageInput) {
+  if (!input.sessionId || input.draftReport === undefined) {
+    return makeToolError(
+      "validate_request_invalid",
+      "Validate stage requires both sessionId and draftReport.",
+      "Call pr_review prepare stage first, then call pr_review again with the returned sessionId and a draftReport."
+    );
+  }
+
+  const beginAttempt = sessionStore.beginValidationAttempt(input.sessionId);
+  if (!beginAttempt.ok) {
+    if (beginAttempt.reason === "missing") {
+      return makeToolError(
+        "session_not_found",
+        `Session "${input.sessionId}" was not found.`,
+        "Run pr_review prepare stage again to create a fresh session."
+      );
+    }
+    if (beginAttempt.reason === "expired") {
+      return makeToolError(
+        "session_expired",
+        `Session "${input.sessionId}" has expired.`,
+        "Run pr_review prepare stage again to create a fresh session."
+      );
+    }
+    return makeToolError(
+      "validation_attempts_exhausted",
+      `Session "${input.sessionId}" reached the maximum validation attempts.`,
+      "Run pr_review prepare stage again to start a new validation loop."
+    );
+  }
+
+  const session = beginAttempt.session;
+  const validation = validateReviewDraft(input.draftReport, session.trackContracts);
+
+  if (!validation.ok) {
+    logger.warn("pr_review: validate stage failed", {
+      sessionId: session.sessionId,
+      attempt: session.attempt,
+      issueCount: validation.issues.length,
+    });
+
+    if (session.attempt >= session.maxAttempts) {
+      sessionStore.complete(session.sessionId);
+      return makeToolError(
+        "validation_attempts_exhausted",
+        "Draft review remained invalid after maximum validation attempts.",
+        validation.issues.join("\n")
+      );
+    }
+
+    const correctionPrompt = [
+      session.assembledPrompt,
+      buildRepairPrompt(validation.issues),
+    ].join("\n\n");
+
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: buildPrReviewRepairJson({
+            sessionId: session.sessionId,
+            attempt: session.attempt,
+            maxAttempts: session.maxAttempts,
+            expiresAt: isoTimestamp(session.expiresAtMs),
+            validationIssues: validation.issues,
+            correctionPrompt,
+          }),
+        },
+      ],
+    };
+  }
+
+  const resolvedFormat = input.format ?? session.outputFormat;
+  const resolvedModel = input.model?.trim() || undefined;
+  const markdown =
+    resolvedFormat === "markdown"
+      ? formatReviewAsMarkdown({
+          review: validation.report,
+          provider: "host_model",
+          model: resolvedModel ?? "unspecified",
+          attempts: session.attempt,
+        })
+      : undefined;
+
+  sessionStore.complete(session.sessionId);
+  logger.info("pr_review: validate stage complete", {
+    sessionId: session.sessionId,
+    attempt: session.attempt,
+    format: resolvedFormat,
+  });
+
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text: buildPrReviewFinalJson({
+          review: validation.report,
+          sessionId: session.sessionId,
+          validationAttempts: session.attempt,
+          model: resolvedModel,
+          markdown,
+        }),
+      },
+    ],
+  };
+}
+
+function makeToolError(
+  code: Parameters<typeof buildPrReviewErrorJsonFromFields>[0]["code"],
+  message: string,
+  detail?: string,
+  retryable = false
+) {
+  return {
+    isError: true,
+    content: [
+      {
+        type: "text" as const,
+        text: buildPrReviewErrorJsonFromFields({
+          code,
+          message,
+          detail,
+          retryable,
+        }),
+      },
+    ],
+  };
+}
 
 // ---- Start ----
 
@@ -460,65 +573,3 @@ main().catch((err) => {
   logger.error("Fatal error during startup", { error: String(err) });
   process.exit(1);
 });
-
-function createMcpSamplingExecutor(): SamplingExecutor {
-  return {
-    async generate(
-      request: SamplingExecutorRequest
-    ): Promise<{
-      provider: string;
-      model: string;
-      text: string;
-    }> {
-      const response = await server.server.createMessage({
-        messages: [
-          {
-            role: "user",
-            content: {
-              type: "text",
-              text: request.prompt,
-            },
-          },
-        ],
-        systemPrompt: request.systemPrompt,
-        maxTokens: request.maxTokens,
-        temperature: request.temperature,
-        includeContext: request.includeContext,
-        modelPreferences: request.modelHint
-          ? {
-              hints: [{ name: request.modelHint }],
-            }
-          : undefined,
-      });
-
-      const text = extractSamplingText(response);
-      if (!text) {
-        throw new Error(
-          "Sampling response did not include text content in assistant message."
-        );
-      }
-
-      return {
-        provider: "mcp_client_sampling",
-        model: response.model,
-        text,
-      };
-    },
-  };
-}
-
-function extractSamplingText(
-  response: CreateMessageResult | CreateMessageResultWithTools
-): string {
-  const chunks = Array.isArray(response.content)
-    ? response.content
-    : [response.content];
-  return chunks
-    .filter((chunk): chunk is { type: "text"; text: string } => {
-      return chunk.type === "text" && typeof chunk.text === "string";
-    })
-    .map((chunk) => chunk.text.trim())
-    .filter(Boolean)
-    .join("\n")
-    .trim();
-}

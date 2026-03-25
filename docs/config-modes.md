@@ -1,16 +1,16 @@
-# Configuration, Modes, and Usage
+# Configuration and Usage
 
-This guide covers installation, MCP attachment, running reviews, runtime modes, and config behavior.
+This guide covers install, keyless staged review flow, config fields, and diagnostics.
 
 ## Install and attach MCP
 
-Install/run from npm:
+Run from npm:
 
 ```bash
 npx -y aggrowal-pr-review-mcp
 ```
 
-Attach in an MCP client (Cursor/Claude-style shape):
+Attach in an MCP client:
 
 ```json
 {
@@ -27,11 +27,11 @@ Attach in an MCP client (Cursor/Claude-style shape):
 Notes:
 
 - Use package name `aggrowal-pr-review-mcp` (not `pr-review-mcp`).
-- MCP hosts do not always inherit your shell environment. Put provider env vars in MCP config when using `provider_api` or `auto` fallback (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`).
+- Runtime is keyless; no provider API keys are required.
 
-## Configure and use
+## Configure and run
 
-Register project once:
+Register a project once:
 
 ```text
 configure_project
@@ -40,31 +40,80 @@ configure_project
   mainBranch: main
 ```
 
-Run review:
+Start review:
 
 ```text
 @pr_review branch: feature/login
-@pr_review branch: fix/JIRA-1234-null-check
-@pr_review branch: java21-upgrade reviewInstructions: Focus on upgrade regressions and test coverage.
+@pr_review branch: java21-upgrade reviewInstructions: Focus on migration regressions and test coverage.
+@pr_review branch: feature/login format: markdown
 ```
 
-`branch` is intentionally explicit. The tool does not default to current branch.
+`branch` stays explicit by design.
 
-## Tool output shape
+## Staged keyless flow
 
-`pr_review` defaults to JSON output (`format: "json"`).
-Set `format: "markdown"` when you want a human-readable summary in chat.
+`pr_review` executes in strict stages:
 
-Success:
+1. **prepare**: server runs deterministic git/diff/skills assembly and returns:
+   - `session.sessionId`
+   - `payload.prompt`
+   - `payload.trackContracts`
+2. **validate**: host submits `draftReport` plus `sessionId`.
+3. **repair** (if needed): server returns `validationIssues` + `payload.correctionPrompt`.
+4. **final**: server returns validated review JSON and optional markdown.
+
+If your IDE does not auto-chain, call validate manually:
+
+```text
+@pr_review sessionId: <from_prepare> draftReport: <json_report_string>
+```
+
+## Tool response shapes
+
+Prepare:
 
 ```json
-{ "ok": true, "review": { "...": "..." }, "meta": { "...": "..." } }
+{
+  "ok": true,
+  "stage": "prepare",
+  "session": { "sessionId": "...", "attempt": 0, "maxAttempts": 3, "expiresAt": "..." },
+  "payload": { "prompt": "...", "trackContracts": [] },
+  "nextAction": { "type": "generate_and_validate", "instructions": "..." }
+}
+```
+
+Repair:
+
+```json
+{
+  "ok": true,
+  "stage": "repair",
+  "session": { "sessionId": "...", "attempt": 1, "maxAttempts": 3, "expiresAt": "..." },
+  "validationIssues": ["..."],
+  "payload": { "correctionPrompt": "..." },
+  "nextAction": { "type": "regenerate_and_validate", "instructions": "..." }
+}
+```
+
+Final:
+
+```json
+{
+  "ok": true,
+  "stage": "final",
+  "review": { "...": "..." },
+  "meta": { "sessionId": "...", "validationAttempts": 2, "model": "optional" },
+  "markdown": "optional summary"
+}
 ```
 
 Error:
 
 ```json
-{ "ok": false, "error": { "code": "...", "message": "...", "detail": "...", "retryable": false } }
+{
+  "ok": false,
+  "error": { "code": "...", "message": "...", "detail": "...", "retryable": false }
+}
 ```
 
 Common `error.code` values:
@@ -72,42 +121,15 @@ Common `error.code` values:
 - `project_guard_failed`
 - `branch_resolution_failed`
 - `diff_extraction_failed`
-- `sampling_unavailable`
-- `sampling_failed`
-- `provider_error`
-- `invalid_output`
-- `schema_invalid`
-- `contract_invalid`
+- `budget_exceeded`
+- `validate_request_invalid`
+- `session_not_found`
+- `session_expired`
+- `validation_attempts_exhausted`
 
-## Runtime modes
+## Config reference
 
-Runtime configuration lives in `~/.pr-review-mcp/config.json` under `reviewRuntime`.
-
-| Mode | What happens | Best for |
-|---|---|---|
-| `client_sampling` (default) | Use model from host/client chat context only. | Chat-first/keyless IDE usage. |
-| `auto` | Try MCP client sampling first; fallback to provider API if sampling is unavailable. | Mixed-client environments with configured provider fallback. |
-| `provider_api` | Call Anthropic/OpenAI directly from server. | Strict provider control or clients without sampling support. |
-
-## Local LLM (IDE context) vs token mode
-
-### IDE/chat-window context path
-
-- Keep default `executionMode: "client_sampling"` (or set it explicitly).
-- Server sends `sampling/createMessage` to the client.
-- Client chooses model from its active context (including local model backends when supported).
-- No provider API token required for this path.
-- `auto` is optional and only needed when you want provider fallback behavior.
-
-### Token/API path
-
-- Set `executionMode` to `provider_api` (or use `auto` with fallback enabled).
-- Configure `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` in MCP `env`.
-- Server calls provider API directly.
-
-In `auto`, fallback is attempted only when sampling errors are classified as unavailable (for example, missing sampling capability/method).
-
-## Full config reference
+Runtime config is `~/.pr-review-mcp/config.json` under `reviewRuntime`.
 
 Example:
 
@@ -123,19 +145,17 @@ Example:
   "logLevel": "info",
   "logFile": true,
   "reviewRuntime": {
-    "provider": "anthropic",
-    "model": "claude-3-5-sonnet-latest",
-    "timeoutMs": 45000,
-    "maxRetries": 1,
-    "maxOutputTokens": 4096,
-    "temperature": 0,
-    "executionMode": "client_sampling",
-    "samplingIncludeContext": "none",
-    "samplingModelHint": "claude",
+    "maxValidationAttempts": 3,
+    "sessionTtlMinutes": 30,
     "enrichment": {
       "enabled": false,
       "provider": "git",
       "maxCommits": 5
+    },
+    "tokenBudget": {
+      "maxPromptChars": 400000,
+      "maxFiles": 100,
+      "maxTotalLines": 15000
     }
   }
 }
@@ -145,18 +165,16 @@ Field summary:
 
 | Field | Type | Default | Purpose |
 |---|---|---|---|
-| `provider` | `anthropic \| openai` | `anthropic` | Provider fallback and explicit provider mode. |
-| `model` | `string` | provider default | Preferred provider model. |
-| `timeoutMs` | `number` | `45000` | LLM request timeout. |
-| `maxRetries` | `0..3` | `1` | Retry attempts for invalid/retryable outcomes. |
-| `maxOutputTokens` | `number` | provider default | Output size guard. |
-| `temperature` | `0..1` | provider default | Generation variability. |
-| `executionMode` | `auto \| client_sampling \| provider_api` | `client_sampling` | Execution routing. |
-| `samplingIncludeContext` | `none \| thisServer \| allServers` | `none` | Sampling context scope hint. |
-| `samplingModelHint` | `string` | unset | Sampling model preference hint. |
+| `maxValidationAttempts` | `1..8` | `3` | Maximum validate/repair loops per session. |
+| `sessionTtlMinutes` | `5..240` | `30` | Session expiration for staged validation. |
 | `enrichment.enabled` | `boolean` | `false` | Enable optional metadata enrichment. |
-| `enrichment.provider` | `git \| github` | `git` | Current enrichment backend. |
+| `enrichment.provider` | `git \| github` | `git` | Enrichment backend. |
 | `enrichment.maxCommits` | `1..20` | `5` | Commit scan cap for enrichment. |
+| `tokenBudget.maxPromptChars` | `number` | `400000` | Prompt size guard. |
+| `tokenBudget.maxFiles` | `number` | `100` | File count guard. |
+| `tokenBudget.maxTotalLines` | `number` | `15000` | Total changed lines guard. |
+
+Legacy provider/sampling keys are tolerated for backward compatibility but ignored.
 
 ## Logging and debugging
 
@@ -175,27 +193,17 @@ Log-level precedence:
 
 Default file path: `~/.pr-review-mcp/debug.log`
 
-## Cross-client compatibility and smoke tests
-
-| Client | Transport | Tools | Sampling support | Notes |
-|---|---|---|---|---|
-| Cursor | stdio | yes | version-dependent | Keep fallback keys configured in `auto`. |
-| Claude Code | stdio | yes | version-dependent | Same command/args/env pattern. |
-| Windsurf | MCP-compatible stdio | expected | version-dependent | Validate in installed client build. |
-| Other MCP clients | varies | varies | varies | Requires stdio + tools; sampling optional. |
-
-Maintainer smoke test:
+## Smoke test
 
 ```bash
 npm run build
 npm run smoke:mcp
 ```
 
-Per-client checklist:
+Recommended client check:
 
 1. Restart MCP after config edits.
-2. Verify `list_projects` succeeds.
-3. Run `configure_project` inside target repo.
-4. Run `@pr_review branch: <valid-branch>`.
-5. Validate expected output format (`json` default, optional `markdown`) + progress logs.
+2. Run `list_projects`.
+3. Run `@pr_review branch: <valid-branch>`.
+4. Confirm you receive stage `prepare`, then stage `final` or `repair`.
 

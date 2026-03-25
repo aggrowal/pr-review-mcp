@@ -8,6 +8,9 @@
   "bin": {
     "aggrowal-pr-review-mcp": "dist/index.js"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/aggrowal/pr-review-mcp.git"

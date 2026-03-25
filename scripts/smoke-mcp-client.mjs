@@ -32,11 +32,25 @@ async function main() {
   const capabilities = client.getServerCapabilities();
   const toolResult = await client.listTools();
   const toolNames = toolResult.tools.map((tool) => tool.name);
+  const prReviewTool = toolResult.tools.find((tool) => tool.name === "pr_review");
 
   const expectedTools = ["configure_project", "list_projects", "pr_review"];
   const missing = expectedTools.filter((name) => !toolNames.includes(name));
   if (missing.length > 0) {
     throw new Error(`Missing required tools: ${missing.join(", ")}`);
+  }
+
+  if (!prReviewTool) {
+    throw new Error("Missing pr_review tool definition.");
+  }
+
+  const prReviewProperties = prReviewTool.inputSchema?.properties ?? {};
+  for (const requiredProperty of ["branch", "sessionId", "draftReport"]) {
+    if (!(requiredProperty in prReviewProperties)) {
+      throw new Error(
+        `pr_review schema missing expected property: ${requiredProperty}`
+      );
+    }
   }
 
   console.log("MCP smoke check passed");

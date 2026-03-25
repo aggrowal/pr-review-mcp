@@ -16,10 +16,10 @@ const STATUS_LABELS: Record<string, string> = {
 
 export function formatReviewAsMarkdown(params: {
   review: ReviewReport;
-  provider: string;
-  model: string;
+  provider?: string;
+  model?: string;
   attempts: number;
-  latencyMs: number;
+  latencyMs?: number;
   usage?: LlmUsage;
 }): string {
   const { review } = params;
@@ -86,16 +86,28 @@ export function formatReviewAsMarkdown(params: {
 
   parts.push("---");
   parts.push("");
-  parts.push(
-    `*Stack: ${review.stack.language}` +
+  const footerParts = [
+    `Stack: ${review.stack.language}` +
       (review.stack.frameworks.length > 0
         ? ` (${review.stack.frameworks.join(", ")})`
-        : "") +
-      ` | Provider: ${params.provider}/${params.model}` +
-      ` | ${params.latencyMs}ms` +
-      (params.attempts > 1 ? ` | ${params.attempts} attempts` : "") +
-      "*"
-  );
+        : ""),
+  ];
+
+  if (params.provider || params.model) {
+    footerParts.push(
+      `Model: ${params.provider ?? "host_model"}/${params.model ?? "unspecified"}`
+    );
+  }
+
+  if (typeof params.latencyMs === "number") {
+    footerParts.push(`${params.latencyMs}ms`);
+  }
+
+  if (params.attempts > 1) {
+    footerParts.push(`${params.attempts} attempts`);
+  }
+
+  parts.push(`*${footerParts.join(" | ")}*`);
 
   return parts.join("\n");
 }

@@ -11,19 +11,8 @@ export const ProjectConfigSchema = z.object({
 });
 
 export const ReviewRuntimeSchema = z.object({
-  provider: z.enum(["anthropic", "openai"]).default("anthropic"),
-  model: z.string().min(1).optional(),
-  timeoutMs: z.number().int().positive().max(120000).default(45000),
-  maxRetries: z.number().int().min(0).max(3).default(1),
-  maxOutputTokens: z.number().int().positive().max(32768).optional(),
-  temperature: z.number().min(0).max(1).optional(),
-  executionMode: z
-    .enum(["auto", "provider_api", "client_sampling"])
-    .default("client_sampling"),
-  samplingIncludeContext: z
-    .enum(["none", "thisServer", "allServers"])
-    .default("none"),
-  samplingModelHint: z.string().min(1).optional(),
+  maxValidationAttempts: z.number().int().min(1).max(8).default(3),
+  sessionTtlMinutes: z.number().int().min(5).max(240).default(30),
   enrichment: z
     .object({
       enabled: z.boolean().default(false),
@@ -42,7 +31,7 @@ export const ReviewRuntimeSchema = z.object({
       maxTotalLines: z.number().int().positive().default(15_000),
     })
     .default({}),
-});
+}).passthrough();
 
 export const ConfigSchema = z.object({
   version: z.literal(1).default(1),

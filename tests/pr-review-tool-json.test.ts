@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { ReviewReportSchema } from "../src/review-contract/schema.js";
-import { ReviewExecutionError } from "../src/review/execute-review.js";
 import {
   PrReviewErrorSchema,
-  PrReviewSuccessSchema,
+  PrReviewFinalSchema,
+  PrReviewPrepareSchema,
+  PrReviewRepairSchema,
   buildPrReviewErrorJson,
   buildPrReviewErrorJsonFromFields,
-  buildPrReviewSuccessJson,
+  buildPrReviewFinalJson,
+  buildPrReviewPrepareJson,
+  buildPrReviewRepairJson,
 } from "../src/review/tool-result.js";
 
 function makeReviewReport() {
@@ -48,35 +51,71 @@ function makeReviewReport() {
 }
 
 describe("pr_review JSON tool payload", () => {
-  it("builds success payload with valid report shape", () => {
-    const report = makeReviewReport();
-    const json = buildPrReviewSuccessJson({
-      review: report,
-      provider: "openai",
-      model: "gpt-4.1-mini",
-      attempts: 1,
-      latencyMs: 532,
-      usage: {
-        inputTokens: 1200,
-        outputTokens: 450,
-        totalTokens: 1650,
-      },
+  it("builds prepare payload with session + prompt contract", () => {
+    const json = buildPrReviewPrepareJson({
+      sessionId: "session-1",
+      attempt: 0,
+      maxAttempts: 3,
+      expiresAt: "2026-03-25T00:00:00.000Z",
+      prompt: "Assembled prompt content",
+      trackContracts: [{ trackId: "correctness", headings: [] }],
     });
 
     const parsed = JSON.parse(json) as unknown;
-    const wrapper = PrReviewSuccessSchema.safeParse(parsed);
+    const wrapper = PrReviewPrepareSchema.safeParse(parsed);
+    expect(wrapper.success).toBe(true);
+    if (wrapper.success) {
+      expect(wrapper.data.session.sessionId).toBe("session-1");
+      expect(wrapper.data.nextAction.type).toBe("generate_and_validate");
+    }
+  });
+
+  it("builds repair payload with actionable issues", () => {
+    const json = buildPrReviewRepairJson({
+      sessionId: "session-1",
+      attempt: 1,
+      maxAttempts: 3,
+      expiresAt: "2026-03-25T00:00:00.000Z",
+      validationIssues: ["Missing required track \"correctness\"."],
+      correctionPrompt: "Prompt + repair directives",
+    });
+
+    const parsed = JSON.parse(json) as unknown;
+    const wrapper = PrReviewRepairSchema.safeParse(parsed);
+    expect(wrapper.success).toBe(true);
+    if (wrapper.success) {
+      expect(wrapper.data.validationIssues).toHaveLength(1);
+      expect(wrapper.data.nextAction.type).toBe("regenerate_and_validate");
+    }
+  });
+
+  it("builds final payload with valid report shape", () => {
+    const report = makeReviewReport();
+    const json = buildPrReviewFinalJson({
+      review: report,
+      sessionId: "session-1",
+      validationAttempts: 2,
+      model: "claude-sonnet",
+      markdown: "# PR Review",
+    });
+
+    const parsed = JSON.parse(json) as unknown;
+    const wrapper = PrReviewFinalSchema.safeParse(parsed);
     expect(wrapper.success).toBe(true);
     if (wrapper.success) {
       expect(ReviewReportSchema.safeParse(wrapper.data.review).success).toBe(true);
+      expect(wrapper.data.meta.validationAttempts).toBe(2);
     }
   });
 
   it("builds error payload with machine-readable fields", () => {
-    const error = new ReviewExecutionError("invalid_output", "invalid json", {
+    const json = buildPrReviewErrorJson({
+      code: "invalid_output",
+      message: "invalid json",
       detail: "parse failure",
       retryable: false,
     });
-    const json = buildPrReviewErrorJson(error);
+
     const parsed = JSON.parse(json) as unknown;
     const wrapper = PrReviewErrorSchema.safeParse(parsed);
     expect(wrapper.success).toBe(true);

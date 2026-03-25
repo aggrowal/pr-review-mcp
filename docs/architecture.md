@@ -10,12 +10,12 @@ t1 --> t2[T2BranchResolver]
 t2 --> t3[T3DiffExtractor]
 t3 --> detect[ContextDetectionAndSkillFilter]
 detect --> assemble[PromptAssembly]
-assemble --> route[ExecutionRouter]
-route -->|client_sampling| hostModel[HostClientModel]
-route -->|provider_api_or_fallback| providerModel[AnthropicOrOpenAI]
-hostModel --> validate[SchemaAndContractValidation]
-providerModel --> validate
-validate --> output[ToolOutputJsonOrMarkdown]
+assemble --> prepare[StagePrepareResponse]
+prepare --> hostModel[HostChatModel]
+hostModel --> validate[StageValidateContractCheck]
+validate -->|issues| repair[StageRepairResponse]
+repair --> hostModel
+validate -->|pass| output[StageFinalValidatedOutput]
 mcpServer --> logs[ProgressAndTelemetryLogs]
 ```
 
@@ -26,9 +26,11 @@ mcpServer --> logs[ProgressAndTelemetryLogs]
 3. `T3` diff extractor computes merge-base diff context.
 4. Orchestrator detects stack/patterns and filters skill set.
 5. Prompt assembler composes trusted instructions + untrusted payload.
-6. Execution router selects `client_sampling`, `provider_api`, or fallback path.
-7. Validator enforces schema + track coverage + verdict consistency.
-8. Tool returns machine-readable JSON by default, or markdown when `format: "markdown"` is requested.
+6. Tool returns `stage: "prepare"` with assembled prompt + track execution contract.
+7. Host model generates draft JSON and calls validate stage with `sessionId` + `draftReport`.
+8. Validator enforces schema + track coverage + verdict consistency.
+9. On failures, tool returns `stage: "repair"` with exact issues and correction prompt.
+10. On success, tool returns `stage: "final"` with validated JSON and optional markdown.
 
 ## Review contract enforcement
 
@@ -40,8 +42,9 @@ The server does not trust raw model output. It enforces:
 
 If output is invalid:
 
-- server retries with correction prompt (bounded by configured retries)
-- then returns structured error JSON
+- server returns a structured `repair` stage with exact failures
+- host regenerates and resubmits
+- loop is bounded by `maxValidationAttempts`
 
 This is why `pr_review` remains deterministic even with non-deterministic model generation.
 
@@ -53,7 +56,7 @@ Token cost control is done structurally, not by dropping review signal:
 - compact per-track prompts (remove repeated boilerplate)
 - avoid duplicate full-file payload for added files when unnecessary
 - prompt size telemetry emitted in logs
-- retries only on invalid/retryable outcomes
+- retries only on validation failures (schema/contract/verdict)
 
 ## Prompt-injection hardening
 
@@ -65,15 +68,16 @@ The review payload is split into trusted and untrusted regions:
 - path sanitization removes control characters
 - trusted `reviewInstructions` channel remains separate from diff content
 
-## Execution router and model paths
+## Staged keyless runtime
 
-Runtime modes:
+Runtime behavior:
 
-- `client_sampling` (default): ask MCP host to execute against host-selected model context
-- `provider_api`: execute directly against Anthropic/OpenAI
-- `auto`: sampling first, provider fallback if sampling unsupported
+- `pr_review` prepare stage always runs locally on deterministic git/prompt pipeline.
+- Model inference is host-owned (chat model), not server-owned.
+- Validation is always server-owned and strict.
+- Repair loop is explicit and portable across MCP clients that support tools.
 
-This keeps cross-client compatibility while still enabling host-context model use when available.
+This avoids dependence on MCP sampling support while preserving strict output guarantees.
 
 ## Key components
 
@@ -83,7 +87,9 @@ This keeps cross-client compatibility while still enabling host-context model us
 - `src/tools/t3-diff-extractor.ts`: diff context extraction
 - `src/orchestrator/detect.ts`: stack/pattern detection and skill filtering
 - `src/prompt/assemble.ts`: prompt assembly and contract extraction
-- `src/review/execute-review.ts`: execution routing, retry, validation
+- `src/review/session-store.ts`: staged validation session lifecycle
+- `src/review/validate-report.ts`: schema/contract/verdict validation
+- `src/review/tool-result.ts`: staged tool response shapes
 - `src/review-contract/schema.ts`: report schema contract
 
 ## Extendability guide
@@ -99,12 +105,6 @@ This keeps cross-client compatibility while still enabling host-context model us
 
 - Extend framework/pattern/language rules in `src/orchestrator/detect.ts`.
 
-### Add provider execution support
-
-- Add provider implementation in `src/llm/providers/`.
-- Wire provider selection in provider factory.
-- Keep output validation unchanged.
-
 ### Add enrichment sources
 
 - Add adapter in `src/enrichment/`.
@@ -119,10 +119,11 @@ This keeps cross-client compatibility while still enabling host-context model us
 
 ## Design rationale
 
-The project deliberately combines deterministic preprocessing with bounded model execution:
+The project deliberately combines deterministic preprocessing with host-model generation and strict validation:
 
 - Deterministic phases make behavior observable, testable, and debuggable.
-- Model phase is constrained by contracts and retries.
-- Final output defaults to machine-readable JSON (with optional markdown presentation format).
+- Model phase remains flexible across IDE hosts.
+- Validation phase is constrained by contracts and bounded retries.
+- Final output is always contract-validated JSON (with optional markdown companion).
 - Logging at each stage makes long-running review calls transparent to users.
 

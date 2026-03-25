@@ -3,9 +3,7 @@
     "pr-review": {
       "command": "npx",
       "args": ["-y", "aggrowal-pr-review-mcp"],
-      "env": {
-        "ANTHROPIC_API_KEY": "your-anthropic-key"
-      }
+      "env": {}
     }
   }
 }
