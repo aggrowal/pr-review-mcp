@@ -53,10 +53,102 @@ async function main() {
     }
   }
 
+  // Validate-stage contract check: should return structured error when session is unknown.
+  const validateCallResult = await client.callTool({
+    name: "pr_review",
+    arguments: {
+      sessionId: "smoke-session",
+      draftReport: "{}",
+    },
+  });
+  const validateEnvelope = parseToolJsonEnvelope(
+    validateCallResult,
+    "validate-stage contract check"
+  );
+  if (validateEnvelope.ok !== false) {
+    throw new Error(
+      "Expected validate-stage contract check to return ok=false for unknown session."
+    );
+  }
+  if (validateEnvelope.meta?.stage !== "error") {
+    throw new Error(
+      "Expected validate-stage contract check to return meta.stage=error."
+    );
+  }
+  if (validateEnvelope.error?.code !== "session_not_found") {
+    throw new Error(
+      `Expected error.code=session_not_found, got ${String(validateEnvelope.error?.code)}`
+    );
+  }
+  if (!validateEnvelope.meta?.contractVersion) {
+    throw new Error("Expected stage attestation contractVersion in error envelope.");
+  }
+
+  // Optional end-to-end prepare contract check. Enable when smoke environment provides a branch.
+  const smokeBranch = process.env.PR_REVIEW_SMOKE_BRANCH;
+  if (smokeBranch) {
+    const prepareCallResult = await client.callTool({
+      name: "pr_review",
+      arguments: {
+        branch: smokeBranch,
+        cwd: process.env.PR_REVIEW_SMOKE_CWD ?? process.cwd(),
+        format: "json",
+      },
+    });
+    const prepareEnvelope = parseToolJsonEnvelope(
+      prepareCallResult,
+      "prepare-stage contract check"
+    );
+    if (prepareEnvelope.ok !== true || prepareEnvelope.stage !== "prepare") {
+      throw new Error(
+        `Expected prepare-stage success envelope, got: ${JSON.stringify(prepareEnvelope, null, 2)}`
+      );
+    }
+    if (prepareEnvelope.meta?.stage !== "prepare") {
+      throw new Error("Expected prepare envelope meta.stage=prepare.");
+    }
+    const callTemplate = prepareEnvelope.nextAction?.callTemplate;
+    if (callTemplate?.tool !== "pr_review") {
+      throw new Error("Expected nextAction.callTemplate.tool=pr_review.");
+    }
+    if (callTemplate?.arguments?.sessionId !== prepareEnvelope.session?.sessionId) {
+      throw new Error(
+        "Expected nextAction.callTemplate.arguments.sessionId to match session.sessionId."
+      );
+    }
+    if (typeof callTemplate?.arguments?.draftReport !== "string") {
+      throw new Error("Expected nextAction.callTemplate.arguments.draftReport placeholder string.");
+    }
+  }
+
   console.log("MCP smoke check passed");
   console.log(`Server entry: ${serverEntry}`);
   console.log(`Server capabilities: ${JSON.stringify(capabilities ?? {}, null, 2)}`);
   console.log(`Tools: ${toolNames.join(", ")}`);
+  console.log("Validated staged contract: validate error envelope");
+  if (process.env.PR_REVIEW_SMOKE_BRANCH) {
+    console.log(
+      `Validated staged contract: prepare envelope for branch ${process.env.PR_REVIEW_SMOKE_BRANCH}`
+    );
+  } else {
+    console.log(
+      "Skipped prepare-stage smoke (set PR_REVIEW_SMOKE_BRANCH to enable full staged check)"
+    );
+  }
+}
+
+function parseToolJsonEnvelope(result, label) {
+  const textEntry = result?.content?.find((entry) => entry?.type === "text");
+  if (!textEntry || typeof textEntry.text !== "string") {
+    throw new Error(`${label} did not return text content.`);
+  }
+  try {
+    return JSON.parse(textEntry.text);
+  } catch (error) {
+    throw new Error(
+      `${label} returned non-JSON text: ${String(error)}\nPayload:\n${textEntry.text}`
+    );
+  }
 }
 
 main()

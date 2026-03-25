@@ -39,6 +39,7 @@
   ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
+    "aggrowal-pr-review-mcp": "^0.1.4",
     "zod": "^3.24.4"
   },
   "devDependencies": {

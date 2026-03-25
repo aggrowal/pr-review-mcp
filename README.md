@@ -53,13 +53,36 @@ configure_project
 
 `pr_review` now uses a strict staged loop:
 
-- Stage `prepare`: server returns `sessionId`, assembled prompt, and coverage contract.
+- Stage `prepare`: server returns `sessionId`, assembled prompt, coverage contract, and `nextAction.callTemplate`.
 - Stage `validate`: host sends a draft report back; server validates schema + contract.
 - Stage `repair` (if needed): server returns exact gaps and a correction prompt.
 - Stage `final`: server returns validated review JSON (and optional markdown summary).
 
 Most IDE agents can chain this automatically after the initial `@pr_review branch: ...` call.  
 If your host does not auto-chain, call `pr_review` again with `sessionId` + `draftReport`.
+
+### Troubleshooting: checks do not kick in
+
+Common bypass symptoms:
+
+- Host returns free-form findings directly, but you do not see staged JSON envelopes with `ok`, `stage`, and `meta`.
+- Response lacks `nextAction.callTemplate` from `prepare` or `repair`.
+- MCP logs do not show `pr_review: prepare stage starting` and `pr_review: validate stage starting`.
+
+Manual recovery flow:
+
+1. Run `@pr_review branch: <branch-name>`.
+2. Copy `nextAction.callTemplate` from the returned `prepare` payload.
+3. Fill `draftReport` with your generated JSON report.
+4. Call `pr_review` again with that payload.
+5. Repeat with the returned `repair` call template until stage `final`.
+
+Debug checklist:
+
+- Set `PR_REVIEW_LOG=debug` in the MCP server environment.
+- Re-run `@pr_review branch: <branch-name>`.
+- Confirm stage logs appear in order: prepare start -> validate start -> (repair or final).
+- If no stage logs appear, your host likely bypassed the MCP tool call.
 
 ## Review contract enforcement
 

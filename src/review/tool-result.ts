@@ -23,6 +23,9 @@ export interface PrReviewToolError {
   retryable?: boolean;
 }
 
+export const REVIEW_STAGE_CONTRACT_VERSION = 1 as const;
+const REVIEW_STAGE_SERVER = "aggrowal-pr-review-mcp";
+
 const SessionSchema = z
   .object({
     sessionId: z.string().min(1),
@@ -34,10 +37,35 @@ const SessionSchema = z
 
 const ValidationIssueSchema = z.array(z.string().min(1));
 
+const StageAttestationSchema = z
+  .object({
+    server: z.literal(REVIEW_STAGE_SERVER),
+    stage: z.enum(["prepare", "repair", "final", "error"]),
+    contractVersion: z.literal(REVIEW_STAGE_CONTRACT_VERSION),
+  })
+  .strict();
+
+const NextActionCallTemplateSchema = z
+  .object({
+    tool: z.literal("pr_review"),
+    arguments: z
+      .object({
+        sessionId: z.string().min(1),
+        draftReport: z.string().min(1),
+        model: z.string().min(1).optional(),
+        format: z.enum(["json", "markdown"]).optional(),
+      })
+      .strict(),
+  })
+  .strict();
+
 export const PrReviewPrepareSchema = z
   .object({
     ok: z.literal(true),
     stage: z.literal("prepare"),
+    meta: StageAttestationSchema.extend({
+      stage: z.literal("prepare"),
+    }),
     session: SessionSchema,
     payload: z
       .object({
@@ -49,6 +77,7 @@ export const PrReviewPrepareSchema = z
       .object({
         type: z.literal("generate_and_validate"),
         instructions: z.string().min(1),
+        callTemplate: NextActionCallTemplateSchema,
       })
       .strict(),
   })
@@ -58,6 +87,9 @@ export const PrReviewRepairSchema = z
   .object({
     ok: z.literal(true),
     stage: z.literal("repair"),
+    meta: StageAttestationSchema.extend({
+      stage: z.literal("repair"),
+    }),
     session: SessionSchema,
     validationIssues: ValidationIssueSchema,
     payload: z
@@ -69,6 +101,7 @@ export const PrReviewRepairSchema = z
       .object({
         type: z.literal("regenerate_and_validate"),
         instructions: z.string().min(1),
+        callTemplate: NextActionCallTemplateSchema,
       })
       .strict(),
   })
@@ -79,13 +112,12 @@ export const PrReviewFinalSchema = z
     ok: z.literal(true),
     stage: z.literal("final"),
     review: z.unknown(),
-    meta: z
-      .object({
-        sessionId: z.string().min(1),
-        validationAttempts: z.number().int().positive(),
-        model: z.string().min(1).optional(),
-      })
-      .strict(),
+    meta: StageAttestationSchema.extend({
+      stage: z.literal("final"),
+      sessionId: z.string().min(1),
+      validationAttempts: z.number().int().positive(),
+      model: z.string().min(1).optional(),
+    }),
     markdown: z.string().optional(),
   })
   .strict();
@@ -93,6 +125,9 @@ export const PrReviewFinalSchema = z
 export const PrReviewErrorSchema = z
   .object({
     ok: z.literal(false),
+    meta: StageAttestationSchema.extend({
+      stage: z.literal("error"),
+    }),
     error: z
       .object({
         code: z.string().min(1),
@@ -116,6 +151,11 @@ export function buildPrReviewPrepareJson(params: {
     {
       ok: true,
       stage: "prepare",
+      meta: {
+        server: REVIEW_STAGE_SERVER,
+        stage: "prepare",
+        contractVersion: REVIEW_STAGE_CONTRACT_VERSION,
+      },
       session: {
         sessionId: params.sessionId,
         attempt: params.attempt,
@@ -129,7 +169,16 @@ export function buildPrReviewPrepareJson(params: {
       nextAction: {
         type: "generate_and_validate",
         instructions:
-          "Generate one JSON report that follows payload.prompt exactly, then call pr_review again with sessionId and draftReport.",
+          "Generate one JSON report that follows payload.prompt exactly, then call pr_review again using nextAction.callTemplate with the same sessionId and the generated draftReport.",
+        callTemplate: {
+          tool: "pr_review",
+          arguments: {
+            sessionId: params.sessionId,
+            draftReport: "<replace_with_generated_review_json_object_or_string>",
+            format: "json",
+            model: "<optional_host_model_identifier>",
+          },
+        },
       },
     },
     null,
@@ -149,6 +198,11 @@ export function buildPrReviewRepairJson(params: {
     {
       ok: true,
       stage: "repair",
+      meta: {
+        server: REVIEW_STAGE_SERVER,
+        stage: "repair",
+        contractVersion: REVIEW_STAGE_CONTRACT_VERSION,
+      },
       session: {
         sessionId: params.sessionId,
         attempt: params.attempt,
@@ -162,7 +216,16 @@ export function buildPrReviewRepairJson(params: {
       nextAction: {
         type: "regenerate_and_validate",
         instructions:
-          "Regenerate the full JSON report using payload.correctionPrompt, then call pr_review again with the same sessionId and the new draftReport.",
+          "Regenerate the full JSON report using payload.correctionPrompt, then call pr_review again using nextAction.callTemplate with the same sessionId and the corrected draftReport.",
+        callTemplate: {
+          tool: "pr_review",
+          arguments: {
+            sessionId: params.sessionId,
+            draftReport: "<replace_with_corrected_review_json_object_or_string>",
+            format: "json",
+            model: "<optional_host_model_identifier>",
+          },
+        },
       },
     },
     null,
@@ -183,6 +246,9 @@ export function buildPrReviewFinalJson(params: {
       stage: "final",
       review: params.review,
       meta: {
+        server: REVIEW_STAGE_SERVER,
+        stage: "final",
+        contractVersion: REVIEW_STAGE_CONTRACT_VERSION,
         sessionId: params.sessionId,
         validationAttempts: params.validationAttempts,
         model: params.model,
@@ -212,6 +278,11 @@ export function buildPrReviewErrorJsonFromFields(params: {
   return JSON.stringify(
     {
       ok: false,
+      meta: {
+        server: REVIEW_STAGE_SERVER,
+        stage: "error",
+        contractVersion: REVIEW_STAGE_CONTRACT_VERSION,
+      },
       error: {
         code: params.code,
         message: params.message,

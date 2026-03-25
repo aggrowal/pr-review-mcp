@@ -10,6 +10,7 @@ This server is keyless and host-driven:
 - Host chat model generates draft review JSON.
 - Server validates draft against schema + per-track contract.
 - On failures, server returns repair instructions until valid or attempts are exhausted.
+- Each stage response includes `meta` attestation and a `nextAction.callTemplate` for the next tool call.
 
 No Anthropic/OpenAI API keys are required for normal operation.
 
@@ -138,6 +139,30 @@ Manual validate call format:
 ```text
 pr_review sessionId: <session-id> draftReport: <json-report>
 ```
+
+---
+
+## Troubleshooting host bypass / non-chaining
+
+If the host replies with findings but your checks do not run, the host may have skipped the MCP tool call.
+
+Bypass indicators:
+
+- No staged JSON envelope (`ok`, `stage`, `meta`) in response.
+- No `nextAction.callTemplate` in `prepare`/`repair` output.
+- No stage markers in logs (`pr_review: prepare stage starting`, `pr_review: validate stage starting`).
+
+Manual recovery path:
+
+1. Run `pr_review branch: <branch-name>`.
+2. Copy the returned `nextAction.callTemplate`.
+3. Replace template `draftReport` with generated JSON report.
+4. Call `pr_review` again with that payload.
+5. Repeat on repair payloads until `stage: "final"`.
+
+Debug tip:
+
+- Set `PR_REVIEW_LOG=debug` for the MCP server process, then retry and confirm stage logs.
 
 ---
 

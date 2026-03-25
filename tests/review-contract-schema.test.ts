@@ -114,4 +114,24 @@ describe("ReviewReportSchema", () => {
       expect(messages.some((message) => message.includes("duplicate trackId"))).toBe(true);
     }
   });
+
+  it("rejects invalid status literals such as HIGH", () => {
+    const payload = makeValidReport() as unknown as {
+      trackCoverage: Array<{
+        headings: Array<{ status: string }>;
+      }>;
+    };
+    payload.trackCoverage[0].headings[0].status = "HIGH";
+
+    const parsed = ReviewReportSchema.safeParse(payload);
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      const invalidStatusIssue = parsed.error.issues.find(
+        (issue) =>
+          issue.path.join(".").includes("trackCoverage.0.headings.0.status") &&
+          issue.message.includes("Invalid enum value")
+      );
+      expect(invalidStatusIssue).toBeDefined();
+    }
+  });
 });

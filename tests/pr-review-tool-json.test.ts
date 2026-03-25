@@ -65,8 +65,16 @@ describe("pr_review JSON tool payload", () => {
     const wrapper = PrReviewPrepareSchema.safeParse(parsed);
     expect(wrapper.success).toBe(true);
     if (wrapper.success) {
+      expect(wrapper.data.meta.server).toBe("aggrowal-pr-review-mcp");
+      expect(wrapper.data.meta.stage).toBe("prepare");
+      expect(wrapper.data.meta.contractVersion).toBe(1);
       expect(wrapper.data.session.sessionId).toBe("session-1");
       expect(wrapper.data.nextAction.type).toBe("generate_and_validate");
+      expect(wrapper.data.nextAction.callTemplate.tool).toBe("pr_review");
+      expect(wrapper.data.nextAction.callTemplate.arguments.sessionId).toBe("session-1");
+      expect(wrapper.data.nextAction.callTemplate.arguments.draftReport).toContain(
+        "<replace_with_generated_review"
+      );
     }
   });
 
@@ -84,8 +92,16 @@ describe("pr_review JSON tool payload", () => {
     const wrapper = PrReviewRepairSchema.safeParse(parsed);
     expect(wrapper.success).toBe(true);
     if (wrapper.success) {
+      expect(wrapper.data.meta.server).toBe("aggrowal-pr-review-mcp");
+      expect(wrapper.data.meta.stage).toBe("repair");
+      expect(wrapper.data.meta.contractVersion).toBe(1);
       expect(wrapper.data.validationIssues).toHaveLength(1);
       expect(wrapper.data.nextAction.type).toBe("regenerate_and_validate");
+      expect(wrapper.data.nextAction.callTemplate.tool).toBe("pr_review");
+      expect(wrapper.data.nextAction.callTemplate.arguments.sessionId).toBe("session-1");
+      expect(wrapper.data.nextAction.callTemplate.arguments.draftReport).toContain(
+        "<replace_with_corrected_review"
+      );
     }
   });
 
@@ -104,6 +120,9 @@ describe("pr_review JSON tool payload", () => {
     expect(wrapper.success).toBe(true);
     if (wrapper.success) {
       expect(ReviewReportSchema.safeParse(wrapper.data.review).success).toBe(true);
+      expect(wrapper.data.meta.server).toBe("aggrowal-pr-review-mcp");
+      expect(wrapper.data.meta.stage).toBe("final");
+      expect(wrapper.data.meta.contractVersion).toBe(1);
       expect(wrapper.data.meta.validationAttempts).toBe(2);
     }
   });
@@ -120,6 +139,9 @@ describe("pr_review JSON tool payload", () => {
     const wrapper = PrReviewErrorSchema.safeParse(parsed);
     expect(wrapper.success).toBe(true);
     if (wrapper.success) {
+      expect(wrapper.data.meta.server).toBe("aggrowal-pr-review-mcp");
+      expect(wrapper.data.meta.stage).toBe("error");
+      expect(wrapper.data.meta.contractVersion).toBe(1);
       expect(wrapper.data.error.code).toBe("invalid_output");
       expect(wrapper.data.error.retryable).toBe(false);
     }
@@ -137,6 +159,7 @@ describe("pr_review JSON tool payload", () => {
     const wrapper = PrReviewErrorSchema.safeParse(parsed);
     expect(wrapper.success).toBe(true);
     if (wrapper.success) {
+      expect(wrapper.data.meta.stage).toBe("error");
       expect(wrapper.data.error.code).toBe("project_guard_failed");
       expect(wrapper.data.error.message).toContain("git repository");
     }

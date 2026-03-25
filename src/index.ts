@@ -143,7 +143,7 @@ server.tool(
 
 server.tool(
   "pr_review",
-  "Run a staged keyless PR review with strict contract validation.",
+  "Run staged keyless PR review. Host must chain prepare -> validate/repair using nextAction.callTemplate.",
   {
     branch: z
       .string()
@@ -175,13 +175,13 @@ server.tool(
       .string()
       .optional()
       .describe(
-        "Validate stage: session ID returned by pr_review prepare/repair stage."
+        "Validate stage: session ID returned by prepare/repair. Required together with draftReport."
       ),
     draftReport: z
       .unknown()
       .optional()
       .describe(
-        "Validate stage: draft JSON report from the host model (object or JSON string)."
+        "Validate stage: draft JSON report from host model (object or JSON string). Required together with sessionId."
       ),
     model: z
       .string()
@@ -427,11 +427,25 @@ async function handlePrepareStage(input: PrepareStageInput) {
 }
 
 async function handleValidateStage(input: ValidateStageInput) {
+  logger.info("pr_review: validate stage starting", {
+    sessionId: input.sessionId,
+    hasDraftReport: input.draftReport !== undefined,
+  });
+
   if (!input.sessionId || input.draftReport === undefined) {
+    const missing: string[] = [];
+    if (!input.sessionId) missing.push("sessionId");
+    if (input.draftReport === undefined) missing.push("draftReport");
+
     return makeToolError(
       "validate_request_invalid",
       "Validate stage requires both sessionId and draftReport.",
-      "Call pr_review prepare stage first, then call pr_review again with the returned sessionId and a draftReport."
+      [
+        `Missing field(s): ${missing.join(", ") || "unknown"}.`,
+        "Call pr_review prepare stage first, then call pr_review again using the exact nextAction.callTemplate from prepare/repair output.",
+        "Manual fallback template:",
+        '{"sessionId":"<from_prepare_or_repair>","draftReport":"<generated_report_json_object_or_string>","format":"json","model":"<optional_host_model_identifier>"}',
+      ].join("\n")
     );
   }
 

@@ -58,6 +58,7 @@ Start review:
    - `session.sessionId`
    - `payload.prompt`
    - `payload.trackContracts`
+   - `meta` stage attestation and `nextAction.callTemplate`
 2. **validate**: host submits `draftReport` plus `sessionId`.
 3. **repair** (if needed): server returns `validationIssues` + `payload.correctionPrompt`.
 4. **final**: server returns validated review JSON and optional markdown.
@@ -68,6 +69,23 @@ If your IDE does not auto-chain, call validate manually:
 @pr_review sessionId: <from_prepare> draftReport: <json_report_string>
 ```
 
+### When checks do not execute
+
+If contract checks are not running, verify that your host is actually calling `pr_review` instead of generating a standalone response.
+
+Symptoms of MCP bypass:
+
+- You see plain findings text without staged JSON (`ok`, `stage`, `meta`).
+- You never receive `nextAction.callTemplate` in tool output.
+- Debug logs do not include stage markers (`prepare`/`validate`).
+
+Manual fallback:
+
+1. Run `@pr_review branch: <branch>`.
+2. Use returned `nextAction.callTemplate` for the next call.
+3. Replace the template `draftReport` placeholder with generated JSON output.
+4. Re-submit until stage `final`.
+
 ## Tool response shapes
 
 Prepare:
@@ -76,9 +94,22 @@ Prepare:
 {
   "ok": true,
   "stage": "prepare",
+  "meta": { "server": "aggrowal-pr-review-mcp", "stage": "prepare", "contractVersion": 1 },
   "session": { "sessionId": "...", "attempt": 0, "maxAttempts": 3, "expiresAt": "..." },
   "payload": { "prompt": "...", "trackContracts": [] },
-  "nextAction": { "type": "generate_and_validate", "instructions": "..." }
+  "nextAction": {
+    "type": "generate_and_validate",
+    "instructions": "...",
+    "callTemplate": {
+      "tool": "pr_review",
+      "arguments": {
+        "sessionId": "...",
+        "draftReport": "<replace_with_generated_review_json_object_or_string>",
+        "format": "json",
+        "model": "<optional_host_model_identifier>"
+      }
+    }
+  }
 }
 ```
 
@@ -88,10 +119,23 @@ Repair:
 {
   "ok": true,
   "stage": "repair",
+  "meta": { "server": "aggrowal-pr-review-mcp", "stage": "repair", "contractVersion": 1 },
   "session": { "sessionId": "...", "attempt": 1, "maxAttempts": 3, "expiresAt": "..." },
   "validationIssues": ["..."],
   "payload": { "correctionPrompt": "..." },
-  "nextAction": { "type": "regenerate_and_validate", "instructions": "..." }
+  "nextAction": {
+    "type": "regenerate_and_validate",
+    "instructions": "...",
+    "callTemplate": {
+      "tool": "pr_review",
+      "arguments": {
+        "sessionId": "...",
+        "draftReport": "<replace_with_corrected_review_json_object_or_string>",
+        "format": "json",
+        "model": "<optional_host_model_identifier>"
+      }
+    }
+  }
 }
 ```
 
@@ -102,7 +146,14 @@ Final:
   "ok": true,
   "stage": "final",
   "review": { "...": "..." },
-  "meta": { "sessionId": "...", "validationAttempts": 2, "model": "optional" },
+  "meta": {
+    "server": "aggrowal-pr-review-mcp",
+    "stage": "final",
+    "contractVersion": 1,
+    "sessionId": "...",
+    "validationAttempts": 2,
+    "model": "optional"
+  },
   "markdown": "optional summary"
 }
 ```
@@ -112,6 +163,7 @@ Error:
 ```json
 {
   "ok": false,
+  "meta": { "server": "aggrowal-pr-review-mcp", "stage": "error", "contractVersion": 1 },
   "error": { "code": "...", "message": "...", "detail": "...", "retryable": false }
 }
 ```
@@ -192,6 +244,13 @@ Log-level precedence:
 4. defaults (`info`, file off)
 
 Default file path: `~/.pr-review-mcp/debug.log`
+
+Stage markers to confirm invocation:
+
+- `pr_review: prepare stage starting`
+- `pr_review: validate stage starting`
+- `pr_review: validate stage failed` (repair path)
+- `pr_review: validate stage complete` (final path)
 
 ## Smoke test
 
